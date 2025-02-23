@@ -1,6 +1,5 @@
 /.env
 /.gradio
-/documents
 /hotpotqa_dev.jsonl
 /plots
 /tydiqa-v1.0-dev.jsonl
