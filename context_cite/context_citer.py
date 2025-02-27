@@ -4,8 +4,8 @@ import torch as ch
 from numpy.typing import NDArray
 from typing import Dict, Any, Optional, List
 from tqdm.auto import tqdm
-import logging
 from transformers import AutoTokenizer, AutoModelForCausalLM
+
 from .context_partitioner import BaseContextPartitioner, SimpleContextPartitioner, SentencePeriodPartitioner
 from .solver import BaseSolver, LassoRegression
 from .utils import (
@@ -39,7 +39,10 @@ class ContextCiter:
         partitioner: Optional[BaseContextPartitioner] = None,
     ) -> None:
         """
-        Initializes a new instance of the ContextCiter class...
+        Initializes a new instance of the ContextCiter class, which automates the process of:
+        1) splitting a context into multiple sources,
+        2) generating a response from an LLM using the query and context,
+        3) attributing which sources contributed the most to the response.
         """
         self.model = model
         self.tokenizer = tokenizer
@@ -64,8 +67,6 @@ class ContextCiter:
         self.partitioner.split_context()
 
         self._cache = {}
-        self.logger = logging.getLogger("ContextCite")
-        self.logger.setLevel(logging.DEBUG)  # TODO: change to INFO later
 
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -212,7 +213,7 @@ class ContextCiter:
         return self._char_range_to_token_range(start_index, end_index)
 
     def _compute_masks_and_logit_probs(self) -> None:
-        self.logger.info("Computing masks and logit probabilities in mini-batches...")
+        # Just removed logging; keeping tqdm progress bar and cache clearing
         total = self.num_ablations
 
         # Preallocate arrays using the shape of the first batch
@@ -294,32 +295,28 @@ class ContextCiter:
         Get the attributions for (part of) the response.
         """
         if self.num_sources == 0:
-            self.logger.warning("No sources to attribute to!")
+            print("[Warning] No sources to attribute to!")
             return np.array([])
 
         if not as_dataframe and top_k is not None:
-            self.logger.warning("top_k is ignored when not using dataframes.")
+            print("[Warning] top_k is ignored when not using dataframes.")
 
         ids_start_idx, ids_end_idx = self._indices_to_token_indices(start_idx, end_idx)
         selected_text = self.response[start_idx:end_idx]
         selected_tokens = self._response_ids[ids_start_idx:ids_end_idx]
         decoded_text = self.tokenizer.decode(selected_tokens)
         if selected_text.strip() not in decoded_text.strip():
-            self.logger.warning(
-                "Decoded selected tokens do not match selected text.\n"
-                "If the following look close enough, feel free to ignore:\n"
-                "What you selected: %s\nWhat is being attributed: %s",
-                selected_text.strip(),
-                decoded_text.strip(),
+            print(
+                "[Warning] Decoded selected tokens do not match selected text.\n"
+                "If the following look close enough, you can ignore this.\n"
+                f"What you selected: {selected_text.strip()}\n"
+                f"What is being attributed: {decoded_text.strip()}"
             )
 
         if verbose:
             print(f"Attributed: {decoded_text.strip()}")
 
-        attributions, _bias = self._get_attributions_for_ids_range(
-            ids_start_idx,
-            ids_end_idx,
-        )
+        attributions, _bias = self._get_attributions_for_ids_range(ids_start_idx, ids_end_idx)
         if as_dataframe:
             return get_attributions_df(attributions, self.partitioner, top_k=top_k)
         else:
