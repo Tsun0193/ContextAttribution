@@ -47,61 +47,47 @@ def plot(cc: ContextCiter) -> plt.Figure:
     plt.close()
     return fig
 
-# Define core function
 def analyze_document(file, query, top_k=5, num_ablations=64):
-    print("analyze_document() called")
-    print(f"Received file: {file.name}")
-    print(f"Query: {query}, Top K: {top_k}, Num Ablations: {num_ablations}")
+    # file is a Gradio File object or dict.
+    # Print it out for debugging:
+    print("Debug file object:", file)
 
-    # Process input file
-    if file.name.endswith(".pdf"):
-        try:
-            docs = parser.load_data(file.name)
-            context = " ".join([doc.text for doc in docs if len(doc.text) >= 32])
-        except Exception as e:
-            print("Error reading PDF file:", e)
-            raise
-    elif file.name.endswith(".txt"):
-        try:
-            with open(file.name, "r") as f:
-                context = f.read()
-        except Exception as e:
-            print("Error reading TXT file:", e)
-            raise
+    # If Gradio gave you a dictionary, 'file.name' will be the temporary file path:
+    if isinstance(file, dict) and 'name' in file:
+        uploaded_file_path = file['name']
+    elif hasattr(file, 'name'):
+        # If it’s an actual file-like object
+        uploaded_file_path = file.name
     else:
-        raise ValueError(f"Unsupported file format: {file.name}")
+        raise ValueError("Could not determine the uploaded file path")
 
-    print("Successfully read the file and constructed context.")
+    # Now extract extension safely
+    _, ext = os.path.splitext(uploaded_file_path.lower())
 
-    try:
-        cc = ContextCiter.from_pretrained(
-            "meta-llama/Llama-3.2-1B-Instruct",
-            context=context,
-            query=query,
-            device="cuda",
-            num_ablations=num_ablations
-        )
-    except Exception as e:
-        print("Error initializing ContextCiter:", e)
-        raise
+    if ext == ".pdf":
+        docs = parser.load_data(uploaded_file_path)
+        context = " ".join([doc.text for doc in docs if len(doc.text) >= 32])
+    elif ext == ".txt":
+        with open(uploaded_file_path, "r", encoding="utf-8") as f:
+            context = f.read()
+    else:
+        raise ValueError("Unsupported file format")
 
-    print("ContextCiter created successfully.")
+    # Create ContextCiter instance
+    cc = ContextCiter.from_pretrained(
+        "meta-llama/Llama-3.2-1B-Instruct",
+        context=context,
+        query=query,
+        device="cuda",
+        num_ablations=num_ablations
+    )
 
-    try:
-        df = cc.get_attributions(as_dataframe=True, top_k=top_k)
-    except Exception as e:
-        print("Error getting attributions:", e)
-        raise
+    # Get results
+    df = cc.get_attributions(as_dataframe=True, top_k=top_k)
 
-    print("Attributions obtained, building plot...")
+    # Create plot
+    fig = plot(cc)
 
-    try:
-        fig = plot(cc)
-    except Exception as e:
-        print("Error generating plot:", e)
-        raise
-
-    print("Returning DataFrame and plot.")
     return df, fig
 
 
