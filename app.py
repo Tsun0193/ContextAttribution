@@ -2,6 +2,7 @@ print("Importing libraries...")
 import gradio as gr
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 import os
 
 from llama_cloud_services import LlamaParse
@@ -10,10 +11,32 @@ from context_cite import ContextCiter
 from context_cite.utils import aggregate_logit_probs
 from scipy.stats import spearmanr
 
+# Import transformers here so we can load the model once
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
 print("Importing complete")
 print("Loading modules")
 load_dotenv()
 parser = LlamaParse(api_key=os.getenv("LLAMA_CLOUD_API_TOKEN"))
+
+# ----------------------------------------------------------
+# 1) Load the LLM model/weights ONCE at startup
+# ----------------------------------------------------------
+print("Initializing LLM model...")
+model_name_or_path = "meta-llama/Llama-3.2-1B-Instruct"
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
+model.to(device)
+
+# Tokenizer setup
+tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+tokenizer.padding_side = "left"
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+print("LLM model initialized!")
+
 
 def plot(cc: ContextCiter) -> plt.Figure:
     pred_logs = cc._logit_probs
@@ -30,56 +53,47 @@ def plot(cc: ContextCiter) -> plt.Figure:
     # Create figure explicitly
     fig = plt.figure(figsize=(8, 8))
     plt.scatter(preds, actus, alpha=0.3, label="Context ablations")
-    
+
     # Plot reference line
     x_line = np.linspace(min(preds.min(), actus.min()), 
                         max(preds.max(), actus.max()), 100)
     plt.plot(x_line, x_line, '--', color='gray', label="y = x")
-    
+
     # Add labels and styling
     plt.xlabel("Predicted log-probability")
     plt.ylabel("Actual log-probability")
     plt.title(f"Predicted vs. Actual log-probability\nSpearman correlation: {corr:.2f}")
     plt.legend()
     plt.grid(True)
-    
+
     # Close plot to prevent memory leaks and return figure
     plt.close()
     return fig
 
+# ----------------------------------------------------------
+# 2) Define core function, reusing the already-loaded model
+# ----------------------------------------------------------
+
 def analyze_document(file, query, top_k=5, num_ablations=64):
-    # file is a Gradio File object or dict.
-    # Print it out for debugging:
-    print("Debug file object:", file)
-
-    # If Gradio gave you a dictionary, 'file.name' will be the temporary file path:
-    if isinstance(file, dict) and 'name' in file:
-        uploaded_file_path = file['name']
-    elif hasattr(file, 'name'):
-        # If it’s an actual file-like object
-        uploaded_file_path = file.name
-    else:
-        raise ValueError("Could not determine the uploaded file path")
-
-    # Now extract extension safely
-    _, ext = os.path.splitext(uploaded_file_path.lower())
-
-    if ext == ".pdf":
-        docs = parser.load_data(uploaded_file_path)
+    # Process input file
+    if hasattr(file, 'name') and file.name.endswith(".pdf"):
+        docs = parser.load_data(file.name)
         context = " ".join([doc.text for doc in docs if len(doc.text) >= 32])
-    elif ext == ".txt":
-        with open(uploaded_file_path, "r", encoding="utf-8") as f:
+    elif hasattr(file, 'name') and file.name.endswith(".txt"):
+        with open(file.name, "r", encoding="utf-8") as f:
             context = f.read()
     else:
-        raise ValueError("Unsupported file format")
+        raise ValueError("Unsupported file format. Please upload .pdf or .txt.")
 
-    # Create ContextCiter instance
-    cc = ContextCiter.from_pretrained(
-        "meta-llama/Llama-3.2-1B-Instruct",
+    # ------------------------------------------------------
+    # Create ContextCiter, but use the preloaded model and tokenizer
+    # ------------------------------------------------------
+    cc = ContextCiter(
+        model=model,
+        tokenizer=tokenizer,
         context=context,
         query=query,
-        device="cuda",
-        num_ablations=num_ablations
+        num_ablations=num_ablations,
     )
 
     # Get results
@@ -89,7 +103,6 @@ def analyze_document(file, query, top_k=5, num_ablations=64):
     fig = plot(cc)
 
     return df, fig
-
 
 print("Modules loaded successfully")
 print("Creating Gradio interface...")
