@@ -49,31 +49,61 @@ def plot(cc: ContextCiter) -> plt.Figure:
 
 # Define core function
 def analyze_document(file, query, top_k=5, num_ablations=64):
+    print("analyze_document() called")
+    print(f"Received file: {file.name}")
+    print(f"Query: {query}, Top K: {top_k}, Num Ablations: {num_ablations}")
+
     # Process input file
     if file.name.endswith(".pdf"):
-        docs = parser.load_data(file.name)
-        context = " ".join([doc.text for doc in docs if len(doc.text) >= 32])
+        try:
+            docs = parser.load_data(file.name)
+            context = " ".join([doc.text for doc in docs if len(doc.text) >= 32])
+        except Exception as e:
+            print("Error reading PDF file:", e)
+            raise
     elif file.name.endswith(".txt"):
-        with open(file.name, "r") as f:
-            context = f.read()
+        try:
+            with open(file.name, "r") as f:
+                context = f.read()
+        except Exception as e:
+            print("Error reading TXT file:", e)
+            raise
     else:
-        raise ValueError("Unsupported file format")
+        raise ValueError(f"Unsupported file format: {file.name}")
 
-    cc = ContextCiter.from_pretrained(
-        "meta-llama/Llama-3.2-1B-Instruct",
-        context=context,
-        query=query,
-        device="cuda",
-        num_ablations=num_ablations
-    )
+    print("Successfully read the file and constructed context.")
 
-    # Get results
-    df = cc.get_attributions(as_dataframe=True, top_k=top_k)
-    
-    # Create plot
-    fig = plot(cc)
-    
+    try:
+        cc = ContextCiter.from_pretrained(
+            "meta-llama/Llama-3.2-1B-Instruct",
+            context=context,
+            query=query,
+            device="cuda",
+            num_ablations=num_ablations
+        )
+    except Exception as e:
+        print("Error initializing ContextCiter:", e)
+        raise
+
+    print("ContextCiter created successfully.")
+
+    try:
+        df = cc.get_attributions(as_dataframe=True, top_k=top_k)
+    except Exception as e:
+        print("Error getting attributions:", e)
+        raise
+
+    print("Attributions obtained, building plot...")
+
+    try:
+        fig = plot(cc)
+    except Exception as e:
+        print("Error generating plot:", e)
+        raise
+
+    print("Returning DataFrame and plot.")
     return df, fig
+
 
 print("Modules loaded successfully")
 print("Creating Gradio interface...")
