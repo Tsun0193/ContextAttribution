@@ -39,44 +39,7 @@ class ContextCiter:
         partitioner: Optional[BaseContextPartitioner] = None,
     ) -> None:
         """
-        Initializes a new instance of the ContextCiter class, which is designed
-        to assist in generating contextualized responses using a given machine
-        learning model and tokenizer, tailored to specific queries and contexts.
-
-        Arguments:
-            model (Any):
-                The model to apply ContextCite to (a HuggingFace
-                ModelForCausalLM).
-            tokenizer (Any):
-                The tokenizer associated with the provided model.
-            context (str):
-                The context provided to the model.
-            query (str):
-                The query to pose to the model.
-            source_type (str, optional):
-                The type of source to partition the context into. Defaults to
-                "sentence", can also be "word".
-            generate_kwargs (Optional[Dict[str, Any]], optional):
-                Additional keyword arguments to pass to the model's generate
-                method.
-            num_ablations (int, optional):
-                The number of ablations used to train the surrogate model.
-                Defaults to 64.
-            ablation_keep_prob (float, optional):
-                The probability of keeping a source when ablating the context.
-                Defaults to 0.5.
-            batch_size (int, optional):
-                The batch size used when performing inference using ablated
-                contexts. Defaults to 1.
-            solver (Optional[Solver], optional):
-                The solver to use to compute the linear surrogate model. Lasso
-                regression is used by default.
-            prompt_template (str, optional):
-                A template string used to create the prompt from the context
-                and query.
-            partitioner (Optional[BaseContextPartitioner], optional):
-                A custom partitioner to split the context into sources. This
-                will override "source_type" if specified.
+        Initializes a new instance of the ContextCiter class...
         """
         self.model = model
         self.tokenizer = tokenizer
@@ -120,30 +83,6 @@ class ContextCiter:
     ) -> "ContextCiter":
         """
         Load a ContextCiter instance from a pretrained model.
-
-        Arguments:
-            pretrained_model_name_or_path (str):
-                The name or path of the pretrained model. This can be a local
-                path or a model name on the HuggingFace model hub.
-            context (str):
-                The context provided to the model. The context and query will be
-                used to construct a prompt for the model, using the prompt template.
-            query (str):
-                The query provided to the model. The context and query will be
-                used to construct a prompt for the model, using the prompt template.
-            device (str, optional):
-                The device to use. Defaults to "cuda".
-            model_kwargs (Dict[str, Any], optional):
-                Additional keyword arguments to pass to the model's constructor.
-            tokenizer_kwargs (Dict[str, Any], optional):
-                Additional keyword arguments to pass to the tokenizer's constructor.
-            **kwargs (Dict[str, Any], optional):
-                Additional keyword arguments to pass to the ContextCiter constructor.
-
-        Returns:
-            ContextCiter:
-                A ContextCiter instance initialized with the provided model,
-                tokenizer, context, query, and other keyword arguments.
         """
         model = AutoModelForCausalLM.from_pretrained(
             pretrained_model_name_or_path, **model_kwargs
@@ -160,23 +99,27 @@ class ContextCiter:
         mask: Optional[NDArray] = None,
         return_prompt: bool = False,
     ):
+        # Cache the unmasked prompt tokens so that repeated calls are faster.
+        if mask is None and not return_prompt and "prompt_ids" in self._cache:
+            return self._cache["prompt_ids"]
+
         context = self.partitioner.get_context(mask)
         prompt = self.prompt_template.format(context=context, query=self.query)
         messages = [{"role": "user", "content": prompt}]
         chat_prompt = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-        ems = self.tokenizer(chat_prompt, 
-                             add_special_tokens=False, 
-                             return_attention_mask=True)
+        ems = self.tokenizer(chat_prompt, add_special_tokens=False, return_attention_mask=True)
 
         chat_prompt_ids = ems["input_ids"]
         attention_mask = ems["attention_mask"]
 
+        if mask is None and not return_prompt:
+            self._cache["prompt_ids"] = chat_prompt_ids
+            return chat_prompt_ids
         if return_prompt:
             return chat_prompt_ids, attention_mask, chat_prompt
-        else:
-            return chat_prompt_ids
+        return chat_prompt_ids
 
     @property
     def _response_start(self):
@@ -190,9 +133,12 @@ class ContextCiter:
             input_ids = ch.tensor([prompt_ids], device=self.model.device)
             attention_mask = ch.tensor([attention_mask], device=self.model.device)
 
-            output_ids = self.model.generate(input_ids = input_ids, 
-                                             attention_mask=attention_mask,
-                                             **self.generate_kwargs, pad_token_id=self.tokenizer.eos_token_id)[0]
+            output_ids = self.model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                **self.generate_kwargs,
+                pad_token_id=self.tokenizer.eos_token_id
+            )[0]
             # We take the original prompt because sometimes encoding and decoding changes it
             raw_output = self.tokenizer.decode(output_ids)
             prompt_length = len(self.tokenizer.decode(prompt_ids))
@@ -201,7 +147,10 @@ class ContextCiter:
 
     @property
     def _output_tokens(self):
-        return self.tokenizer(self._output, add_special_tokens=False)
+        # Cache the tokenized output so it is computed only once.
+        if "output_tokens" not in self._cache:
+            self._cache["output_tokens"] = self.tokenizer(self._output, add_special_tokens=False)
+        return self._cache["output_tokens"]
 
     @property
     def _response_ids(self):
@@ -210,12 +159,7 @@ class ContextCiter:
     @property
     def response(self):
         """
-        The response generated by the model (excluding the prompt). This
-        property is cached.
-
-        Returns:
-            str:
-                The response generated by the model.
+        The response generated by the model (excluding the prompt). This property is cached.
         """
         output_tokens = self._output_tokens
         char_response_start = output_tokens.token_to_chars(self._response_start).start
@@ -228,21 +172,8 @@ class ContextCiter:
     @property
     def response_with_indices(self, split_by="word", color=True) -> str | pd.DataFrame:
         """
-        The response generated by the model, annotated with the starting index
-        of each part.
-
-        Arguments:
-            split_by (str, optional):
-                The method to split the response by. Can be "word" or "sentence".
-                Defaults to "word".
-            color (bool, optional):
-                Whether to color the starting index of each part. Defaults to True.
-
-        Returns:
-            str:
-                The response with the starting index of each part highlighted.
+        The response generated by the model, annotated with the starting index of each part.
         """
-        start_indices = []
         parts, separators, start_indices = split_text(self.response, split_by)
         separated_str = highlight_word_indices(parts, start_indices, separators, color)
         return separated_str
@@ -250,24 +181,14 @@ class ContextCiter:
     @property
     def num_sources(self) -> int:
         """
-        The number of sources within the context. I.e., the number of sources
-        that the context is partitioned into.
-
-        Returns:
-            int:
-                The number of sources in the context.
+        The number of sources within the context.
         """
         return self.partitioner.num_sources
 
     @property
     def sources(self) -> List[str]:
         """
-        The sources within the context. I.e., the context as a list
-        where each element is a source.
-
-        Returns:
-            List[str]:
-                The sources within the context.
+        The sources within the context.
         """
         return self.partitioner.sources
 
@@ -292,32 +213,51 @@ class ContextCiter:
 
     def _compute_masks_and_logit_probs(self) -> None:
         self.logger.info("Computing masks and logit probabilities in mini-batches...")
-        all_masks = []
-        all_logit_probs = []
         total = self.num_ablations
-        for start in tqdm(range(0, total, self.batch_size)):
+
+        # Preallocate arrays using the shape of the first batch
+        first_batch = min(self.batch_size, total)
+        with ch.no_grad():
+            first_masks, first_logit_probs = get_masks_and_logit_probs(
+                self.model,
+                self.tokenizer,
+                first_batch,
+                self.num_sources,
+                self._get_prompt_ids,
+                self._response_ids,
+                self.ablation_keep_prob,
+                batch_size=first_batch,
+                base_seed=0
+            )
+        masks_shape = (total,) + first_masks.shape[1:]
+        logit_shape = (total,) + first_logit_probs.shape[1:]
+        all_masks = np.empty(masks_shape, dtype=first_masks.dtype)
+        all_logit_probs = np.empty(logit_shape, dtype=first_logit_probs.dtype)
+        all_masks[:first_batch] = first_masks
+        all_logit_probs[:first_batch] = first_logit_probs
+
+        current_index = first_batch
+        for start in tqdm(range(first_batch, total, self.batch_size)):
             current_batch = min(self.batch_size, total - start)
             with ch.no_grad():
-                # Update the base_seed for each batch to ensure diversity.
                 batch_masks, batch_logit_probs = get_masks_and_logit_probs(
                     self.model,
                     self.tokenizer,
-                    current_batch,       # number of ablations for this mini-batch
+                    current_batch,
                     self.num_sources,
                     self._get_prompt_ids,
                     self._response_ids,
                     self.ablation_keep_prob,
-                    batch_size=current_batch,  # process these in one mini-batch
-                    base_seed=start  # use a different seed for each batch
+                    batch_size=current_batch,
+                    base_seed=start
                 )
-            all_masks.append(batch_masks)
-            all_logit_probs.append(batch_logit_probs)
-            # Clear temporary CUDA memory after each mini-batch.
-            ch.cuda.empty_cache()
+            all_masks[current_index : current_index + current_batch] = batch_masks
+            all_logit_probs[current_index : current_index + current_batch] = batch_logit_probs
+            current_index += current_batch
+            ch.cuda.empty_cache()  # Clear temporary CUDA memory after each mini-batch.
 
-        self._cache["reg_masks"] = np.concatenate(all_masks, axis=0)
-        self._cache["reg_logit_probs"] = np.concatenate(all_logit_probs, axis=0)
-
+        self._cache["reg_masks"] = all_masks
+        self._cache["reg_logit_probs"] = all_logit_probs
 
     @property
     def _masks(self):
@@ -352,31 +292,6 @@ class ContextCiter:
     ) -> NDArray | Any:
         """
         Get the attributions for (part of) the response.
-
-        Arguments:
-            start_idx (int, optional):
-                Start index of the part to attribute to. If None, defaults to
-                the start of the response.
-            end_idx (int, optional):
-                End index of the part to attribute to. If None, defaults to the
-                end of the response.
-            as_dataframe (bool, optional):
-                If True, return the attributions as a stylized dataframe in
-                sorted order. Otherwise, return them as a numpy array where
-                the ith element corresponds to the score of the ith source
-                within the context. Defaults to False.
-            top_k (int, optional):
-                Only used if as_dataframe is True. Number of top attributions to
-                return. If None, all attributions are returned. Defaults to None.
-            verbose (bool, optional):
-                If True, print the selected part of the response. Defaults to
-                True.
-
-        Returns:
-            NDArray | Any:
-                If as_dataframe is False, return a numpy array where the ith element
-                corresponds to the score of the ith source within the context.
-                Otherwise, return a stylized dataframe in sorted order.
         """
         if self.num_sources == 0:
             self.logger.warning("No sources to attribute to!")
@@ -401,8 +316,6 @@ class ContextCiter:
         if verbose:
             print(f"Attributed: {decoded_text.strip()}")
 
-
-        # _bias is the bias term in the l1 regression
         attributions, _bias = self._get_attributions_for_ids_range(
             ids_start_idx,
             ids_end_idx,
