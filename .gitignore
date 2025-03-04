@@ -1,8 +1,7 @@
 /.env
 /.gradio
-/hotpotqa_dev.jsonl
+/*.jsonl
 /plots
-/tydiqa-v1.0-dev.jsonl
 
 # ------------------------------
 # Byte-compiled / optimized / DLL files
