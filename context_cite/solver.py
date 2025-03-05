@@ -2,7 +2,7 @@ import numpy as np
 from numpy.typing import NDArray
 from typing import Tuple
 from abc import ABC, abstractmethod
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.linear_model import Lasso
 from sklearn.pipeline import make_pipeline
 
