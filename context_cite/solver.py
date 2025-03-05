@@ -53,41 +53,38 @@ class LassoRegression(BaseSolver):
         bias = lasso.intercept_ - (scaler.mean_ / scaler.scale_) @ lasso.coef_.T
         return weight * num_output_tokens, bias * num_output_tokens
 
-class PolynomialRegression(BaseSolver):
+class PolynomialLassoRegression(BaseSolver):
     """
-    A Polynomial Regression solver using scikit-learn.
-
+    A LASSO solver with polynomial feature expansion to capture non-linear interactions.
+    
     Attributes:
-        degree (int): The degree of the polynomial features.
-        alpha (float): The regularization parameter for LASSO.
-
-    Methods:
-        fit(self, masks: NDArray, outputs: NDArray, num_output_tokens: int) -> Tuple[NDArray, NDArray]:
-            Fit the polynomial regression model to the given data.
+        lasso_alpha (float): The alpha parameter for LASSO regression.
+        degree (int): The degree of polynomial features to generate.
     """
 
-    def __init__(self, degree: int = 2, alpha: float = 0.01) -> None:
+    def __init__(self, lasso_alpha: float = 0.01, degree: int = 2) -> None:
+        self.lasso_alpha = lasso_alpha
         self.degree = degree
-        self.alpha = alpha
 
     def fit(
         self, masks: NDArray, outputs: NDArray, num_output_tokens: int
     ) -> Tuple[NDArray, NDArray]:
+        # Convert input masks and normalize outputs by number of output tokens
         X = masks.astype(np.float32)
         Y = outputs / num_output_tokens
         
-        # Create polynomial features
+        # Expand features to include interaction terms
         poly = PolynomialFeatures(degree=self.degree, include_bias=False)
         X_poly = poly.fit_transform(X)
-
-        scaler = StandardScaler()
-        lasso = Lasso(alpha=self.alpha, random_state=0, fit_intercept=True)
         
-        # Create a pipeline with polynomial features and LASSO
+        # Create a pipeline with scaling and LASSO regression
+        scaler = StandardScaler()
+        lasso = Lasso(alpha=self.lasso_alpha, random_state=0, fit_intercept=True)
         pipeline = make_pipeline(scaler, lasso)
         pipeline.fit(X_poly, Y)
-
+        
+        # To interpret the results, note that the learned coefficients correspond to the polynomial features.
+        # The 'poly' object contains the mapping from original features to the expanded feature space.
         weight = lasso.coef_ / scaler.scale_
         bias = lasso.intercept_ - (scaler.mean_ / scaler.scale_) @ lasso.coef_.T
-
         return weight * num_output_tokens, bias * num_output_tokens
