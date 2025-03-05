@@ -78,6 +78,7 @@ class ContextCiter:
         pretrained_model_name_or_path: str,
         context: str,
         query: str,
+        answer: str = None,
         device: str = "cuda",
         model_kwargs: Dict[str, Any] = {},
         tokenizer_kwargs: Dict[str, Any] = {},
@@ -94,7 +95,7 @@ class ContextCiter:
             pretrained_model_name_or_path, **tokenizer_kwargs
         )
         tokenizer.padding_side = "left"
-        return cls(model, tokenizer, context, query, **kwargs)
+        return cls(model, tokenizer, context, query, answer, **kwargs)
 
     def _get_prompt_ids(
         self,
