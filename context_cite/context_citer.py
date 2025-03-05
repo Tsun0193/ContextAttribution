@@ -79,6 +79,7 @@ class ContextCiter:
         pretrained_model_name_or_path: str,
         context: str,
         query: str,
+        solver: str = "lasso",
         device: str = "cuda",
         model_kwargs: Dict[str, Any] = {},
         tokenizer_kwargs: Dict[str, Any] = {},
@@ -95,7 +96,8 @@ class ContextCiter:
             pretrained_model_name_or_path, **tokenizer_kwargs
         )
         tokenizer.padding_side = "left"
-        return cls(model, tokenizer, context, query, **kwargs)
+        solver = SOLVERS[solver]
+        return cls(model, tokenizer, context, query, solver, **kwargs)
 
     def _get_prompt_ids(
         self,
