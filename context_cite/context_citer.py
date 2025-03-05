@@ -19,7 +19,7 @@ from .utils import (
 
 DEFAULT_GENERATE_KWARGS = {"max_new_tokens": 512, "do_sample": False}
 DEFAULT_PROMPT_TEMPLATE = "Context: {context}\n\nQuery: {query}"
-
+SOLVERS = {"lasso": LassoRegression, "polynomial": PolynomialRegression}
 
 class ContextCiter:
     def __init__(
@@ -51,7 +51,10 @@ class ContextCiter:
         self.num_ablations = num_ablations
         self.ablation_keep_prob = ablation_keep_prob
         self.batch_size = batch_size
-        self.solver = solver or LassoRegression()
+        if self.solver is None:
+            self.solver = LassoRegression()
+        else:
+            self.solver = SOLVERS[solver]
         self.prompt_template = prompt_template
 
         # Initialize the partitioner
