@@ -7,7 +7,7 @@ from tqdm.auto import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from .context_partitioner import BaseContextPartitioner, SentencePeriodPartitioner, SimpleContextPartitioner
-from .solver import BaseSolver, LassoRegression
+from .solver import *
 from .utils import (
     get_masks_and_logit_probs,
     aggregate_logit_probs,
