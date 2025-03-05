@@ -19,7 +19,7 @@ from .utils import (
 
 DEFAULT_GENERATE_KWARGS = {"max_new_tokens": 512, "do_sample": False}
 DEFAULT_PROMPT_TEMPLATE = "Context: {context}\n\nQuery: {query}"
-SOLVERS = {"lasso": LassoRegression, "polynomial": PolynomialRegression}
+SOLVERS = {"lasso": LassoRegression, "polynomial": PolynomialLassoRegression}
 
 class ContextCiter:
     def __init__(
