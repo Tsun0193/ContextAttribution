@@ -1,11 +1,13 @@
 import numpy as np
 from numpy.typing import NDArray
-from typing import Tuple
+from typing import Tuple, Optional, Union
 from abc import ABC, abstractmethod
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
-from sklearn.linear_model import Lasso
+from sklearn.linear_model import Lasso, ElasticNet
 from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import make_pipeline
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.svm import SVR
 
 
 class BaseSolver(ABC):
@@ -196,3 +198,203 @@ class MLPRegression(BaseSolver):
 
         # Scale attributions back to original output scale.
         return grad * num_output_tokens, bias * num_output_tokens
+
+class RandomForestRegression(BaseSolver):
+    """
+    A non-linear surrogate model using RandomForestRegressor. We compute local
+    attributions by approximating the gradient at the all-ones baseline via
+    finite differences.
+    """
+    def __init__(
+        self,
+        n_estimators: int = 100,
+        max_depth: Optional[int] = None,
+        epsilon: float = 1e-3,
+        random_state: int = 0,
+    ) -> None:
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.epsilon = epsilon
+        self.random_state = random_state
+
+    def fit(
+        self, masks: NDArray, outputs: NDArray, num_output_tokens: int
+    ) -> Tuple[NDArray, float]:
+        # Convert to float and normalize outputs
+        X = masks.astype(np.float32)
+        Y = outputs / num_output_tokens
+
+        # Optionally standardize features
+        self.scaler = StandardScaler()
+        X_scaled = self.scaler.fit_transform(X)
+
+        # Train RandomForest
+        self.model = RandomForestRegressor(
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            random_state=self.random_state,
+        )
+        self.model.fit(X_scaled, Y)
+
+        # Baseline = full context
+        n_features = X.shape[1]
+        x0 = np.ones((1, n_features), dtype=np.float32)
+        x0_scaled = self.scaler.transform(x0)
+        base_val = self.model.predict(x0_scaled)[0]
+
+        # Finite differences
+        grad = np.zeros(n_features, dtype=np.float32)
+        for i in range(n_features):
+            x_plus = x0.copy()
+            x_plus[0, i] += self.epsilon
+            x_plus_scaled = self.scaler.transform(x_plus)
+            val_plus = self.model.predict(x_plus_scaled)[0]
+            grad[i] = (val_plus - base_val) / self.epsilon
+
+        bias = base_val - grad.dot(x0[0])
+        return grad * num_output_tokens, bias * num_output_tokens
+
+class GradientBoostingRegression(BaseSolver):
+    """
+    A non-linear surrogate model using GradientBoostingRegressor. We compute local
+    attributions by approximating the gradient at the all-ones baseline via finite differences.
+    """
+    def __init__(
+        self,
+        n_estimators: int = 100,
+        learning_rate: float = 0.1,
+        max_depth: int = 3,
+        epsilon: float = 1e-3,
+        random_state: int = 0,
+    ) -> None:
+        self.n_estimators = n_estimators
+        self.learning_rate = learning_rate
+        self.max_depth = max_depth
+        self.epsilon = epsilon
+        self.random_state = random_state
+
+    def fit(
+        self, masks: NDArray, outputs: NDArray, num_output_tokens: int
+    ) -> Tuple[NDArray, float]:
+        # Convert to float and normalize outputs
+        X = masks.astype(np.float32)
+        Y = outputs / num_output_tokens
+
+        # Optionally standardize features
+        self.scaler = StandardScaler()
+        X_scaled = self.scaler.fit_transform(X)
+
+        # Train GradientBoosting
+        self.model = GradientBoostingRegressor(
+            n_estimators=self.n_estimators,
+            learning_rate=self.learning_rate,
+            max_depth=self.max_depth,
+            random_state=self.random_state,
+        )
+        self.model.fit(X_scaled, Y)
+
+        # Baseline = full context
+        n_features = X.shape[1]
+        x0 = np.ones((1, n_features), dtype=np.float32)
+        x0_scaled = self.scaler.transform(x0)
+        base_val = self.model.predict(x0_scaled)[0]
+
+        # Finite differences
+        grad = np.zeros(n_features, dtype=np.float32)
+        for i in range(n_features):
+            x_plus = x0.copy()
+            x_plus[0, i] += self.epsilon
+            x_plus_scaled = self.scaler.transform(x_plus)
+            val_plus = self.model.predict(x_plus_scaled)[0]
+            grad[i] = (val_plus - base_val) / self.epsilon
+
+        bias = base_val - grad.dot(x0[0])
+        return grad * num_output_tokens, bias * num_output_tokens
+
+class SVRRegression(BaseSolver):
+    """
+    A non-linear surrogate model that uses Support Vector Regression with an RBF kernel.
+    Local attributions are derived by approximating the gradient at the all-ones baseline.
+    """
+    def __init__(
+        self,
+        kernel: str = "rbf",
+        C: float = 1.0,
+        gamma: Optional[Union[float, str]] = "scale",
+        epsilon: float = 2e-3,
+        fd_step: float = 2e-5,
+    ) -> None:
+        self.kernel = kernel
+        self.C = C
+        self.gamma = gamma
+        self.epsilon = epsilon     # For the SVR loss
+        self.fd_step = fd_step     # For finite differences
+
+    def fit(
+        self, masks: NDArray, outputs: NDArray, num_output_tokens: int
+    ) -> Tuple[NDArray, float]:
+        X = masks.astype(np.float32)
+        Y = outputs / num_output_tokens
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        # Train SVR
+        self.model = SVR(kernel=self.kernel, C=self.C, gamma=self.gamma, epsilon=self.epsilon)
+        self.model.fit(X_scaled, Y)
+
+        # Baseline = full context
+        n_features = X.shape[1]
+        x0 = np.ones((1, n_features), dtype=np.float32)
+        x0_scaled = scaler.transform(x0)
+        base_val = self.model.predict(x0_scaled)[0]
+
+        # Finite differences
+        grad = np.zeros(n_features, dtype=np.float32)
+        for i in range(n_features):
+            x_plus = x0.copy()
+            x_plus[0, i] += self.fd_step
+            x_plus_scaled = scaler.transform(x_plus)
+            val_plus = self.model.predict(x_plus_scaled)[0]
+            grad[i] = (val_plus - base_val) / self.fd_step
+
+        bias = base_val - grad.dot(x0[0])
+        return grad * num_output_tokens, bias * num_output_tokens
+
+class ElasticNetRegression(BaseSolver):
+    """
+    A linear model that mixes L1 and L2 regularization. 
+    """
+    def __init__(
+        self,
+        alpha: float = 0.01,
+        l1_ratio: float = 0.5,
+        random_state: int = 0,
+    ) -> None:
+        self.alpha = alpha
+        self.l1_ratio = l1_ratio
+        self.random_state = random_state
+
+    def fit(
+        self, masks: NDArray, outputs: NDArray, num_output_tokens: int
+    ) -> Tuple[NDArray, float]:
+        X = masks.astype(np.float32)
+        Y = outputs / num_output_tokens
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        model = ElasticNet(alpha=self.alpha, l1_ratio=self.l1_ratio, random_state=self.random_state)
+        model.fit(X_scaled, Y)
+
+        # Convert back to unscaled coefficients
+        # The pipeline is not used, so we do it manually:
+        weight_scaled = model.coef_
+        bias_scaled = model.intercept_
+
+        # weight = weight_scaled / scaler.scale_
+        # but we must handle each feature carefully:
+        weight = weight_scaled / scaler.scale_
+        bias = bias_scaled - (scaler.mean_ / scaler.scale_).dot(weight_scaled)
+
+        return weight * num_output_tokens, bias * num_output_tokens
