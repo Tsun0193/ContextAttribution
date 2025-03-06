@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional, List, Tuple, Union
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from .context_partitioner import BaseContextPartitioner, SentencePeriodPartitioner, SimpleContextPartitioner
+from .context_partitioner import *
 from .solver import *
 from .utils import (
     get_masks_and_logit_probs,
@@ -19,7 +19,11 @@ from .utils import (
 
 DEFAULT_GENERATE_KWARGS = {"max_new_tokens": 512, "do_sample": False}
 DEFAULT_PROMPT_TEMPLATE = "Context: {context}\n\nQuery: {query}"
-SOLVERS = {"lasso": LassoRegression, "polynomial": PolynomialLassoRegression}
+SOLVERS = {
+    "lasso": LassoRegression, 
+    "polynomial": PolynomialLassoRegression,
+    "mlp": MLPRegression
+}
 
 class ContextCiter:
     def __init__(
@@ -28,12 +32,12 @@ class ContextCiter:
         tokenizer: Any,
         context: str,
         query: str,
+        solver: Optional[BaseSolver] = None,
         source_type: str = "sentence",
         generate_kwargs: Optional[Dict[str, Any]] = None,
         num_ablations: int = 64,
         ablation_keep_prob: float = 0.5,
         batch_size: int = 1,
-        solver: Optional[BaseSolver] = None,
         prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
         partitioner: Optional[BaseContextPartitioner] = None,
     ) -> None:
@@ -51,17 +55,18 @@ class ContextCiter:
         self.num_ablations = num_ablations
         self.ablation_keep_prob = ablation_keep_prob
         self.batch_size = batch_size
+        self.solver = solver
         if self.solver is None:
             self.solver = LassoRegression()
         else:
-            self.solver = SOLVERS[solver]
+            self.solver = SOLVERS[solver]()
         self.prompt_template = prompt_template
 
         # Initialize the partitioner
         if partitioner is None:
             self.partitioner = SimpleContextPartitioner(self.context)
         else:
-            self.partitioner = partitioner
+            self.partitioner = partitioner()
             if self.partitioner.context != self.context:
                 raise ValueError("Partitioner context does not match provided context.")
 
@@ -96,7 +101,6 @@ class ContextCiter:
             pretrained_model_name_or_path, **tokenizer_kwargs
         )
         tokenizer.padding_side = "left"
-        solver = SOLVERS[solver]
         return cls(model, tokenizer, context, query, solver, **kwargs)
 
     def _get_prompt_ids(
@@ -279,7 +283,8 @@ class ContextCiter:
         outputs = aggregate_logit_probs(self._logit_probs[:, ids_start_idx:ids_end_idx])
         self._cache["actual_logit_probs"] = outputs
         num_output_tokens = ids_end_idx - ids_start_idx
-        weight, bias = self.solver.fit(self._masks, outputs, num_output_tokens)
+        # weight, bias = self.solver.fit(self._masks, outputs, num_output_tokens)
+        weight, bias = self.solver.fit(self._masks, outputs, self.num_sources)
         return weight, bias
 
     @property
