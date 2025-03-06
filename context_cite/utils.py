@@ -201,19 +201,24 @@ def get_attributions_df(
     top_k: Optional[int] = None,
 ) -> Any:
     order = attributions.argsort()[::-1]
+    
+    # Filter indices that are within the range of available sources.
+    valid_order = [i for i in order if i < len(context_partitioner.parts)]
+    
+    if top_k is not None:
+        valid_order = valid_order[:top_k]
+    
     selected_attributions = []
     selected_sources = []
-
-    if top_k is not None:
-        order = order[:top_k]
-
-    for i in order:
+    
+    for i in valid_order:
         selected_attributions.append(attributions[i])
         selected_sources.append(context_partitioner.get_source(i))
-
-    df = pd.DataFrame.from_dict(
-        {"Score": selected_attributions, "Source": selected_sources}
-    )
+    
+    df = pd.DataFrame.from_dict({
+        "Score": selected_attributions,
+        "Source": selected_sources
+    })
     df = _apply_color_scale(df).format(precision=3)
     return df
 
