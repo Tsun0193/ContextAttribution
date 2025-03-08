@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import GradientBoostingRegressor
 import torch as ch
 from numpy.typing import NDArray
 from typing import Dict, Any, Optional, List, Tuple, Union
@@ -22,7 +23,11 @@ DEFAULT_PROMPT_TEMPLATE = "Context: {context}\n\nQuery: {query}"
 SOLVERS = {
     "lasso": LassoRegression, 
     "polynomial": PolynomialLassoRegression,
-    "mlp": MLPRegression
+    "mlp": MLPRegression,
+    "random_forest": RandomForestRegression,
+    "grad_boosting": GradientBoostingRegression,
+    "svr": SVRRegression,
+    "elastic_net": ElasticNetRegression
 }
 
 class ContextCiter:
