@@ -207,9 +207,9 @@ class RandomForestRegression(BaseSolver):
     """
     def __init__(
         self,
-        n_estimators: int = 100,
-        max_depth: Optional[int] = None,
-        epsilon: float = 1e-3,
+        n_estimators: int = 256,
+        max_depth: Optional[int] = 16,
+        epsilon: float = 1e-5,
         random_state: int = 0,
     ) -> None:
         self.n_estimators = n_estimators
@@ -261,11 +261,11 @@ class GradientBoostingRegression(BaseSolver):
     """
     def __init__(
         self,
-        n_estimators: int = 100,
-        learning_rate: float = 0.1,
-        max_depth: int = 3,
-        epsilon: float = 1e-3,
-        random_state: int = 0,
+        n_estimators: int = 512,
+        learning_rate: float = 0.2,
+        max_depth: int = 16,
+        epsilon: float = 2e-4,
+        random_state: int = 42
     ) -> None:
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
@@ -318,10 +318,10 @@ class SVRRegression(BaseSolver):
     """
     def __init__(
         self,
-        kernel: str = "rbf",
+        kernel: str = "poly",
         C: float = 1.0,
         gamma: Optional[Union[float, str]] = "scale",
-        epsilon: float = 2e-3,
+        epsilon: float = 2e-4,
         fd_step: float = 2e-5,
     ) -> None:
         self.kernel = kernel
