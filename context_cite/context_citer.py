@@ -399,5 +399,7 @@ class ContextCiter:
                 pad_token_id=self.tokenizer.eos_token_id
             )[0]
             raw_output = self.tokenizer.decode(output_ids)
-            paraphrased_sources.append(raw_output[len(chat_prompt):-len(self.tokenizer.eos_token)])
+            paraphrased_sources.append([
+                source, raw_output[len(chat_prompt):-len(self.tokenizer.eos_token)]
+            ])
         return paraphrased_sources
