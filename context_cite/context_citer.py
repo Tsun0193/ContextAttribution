@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor
-import torch as ch
+import torch
 from numpy.typing import NDArray
 from typing import Dict, Any, Optional, List, Tuple, Union
 from tqdm.auto import tqdm
@@ -29,6 +29,7 @@ SOLVERS = {
     "svr": SVRRegression,
     "elastic_net": ElasticNetRegression
 }
+PARAPHRASE_PROMPT = "Return a paraphrase of the following sentence: {sentence}"
 
 class ContextCiter:
     def __init__(
@@ -144,8 +145,8 @@ class ContextCiter:
     def _output(self) -> str:
         if self._cache.get("output") is None:
             prompt_ids, attention_mask, prompt = self._get_prompt_ids(return_prompt=True)
-            input_ids = ch.tensor([prompt_ids], device=self.model.device)
-            attention_mask = ch.tensor([attention_mask], device=self.model.device)
+            input_ids = torch.tensor([prompt_ids], device=self.model.device)
+            attention_mask = torch.tensor([attention_mask], device=self.model.device)
 
             output_ids = self.model.generate(
                 input_ids=input_ids,
@@ -228,9 +229,9 @@ class ContextCiter:
     def _compute_masks_and_logit_probs(self) -> None:
         total = self.num_ablations
 
-        # Preallocate arrays using the shape of the first batch.
+        # Preallocate arrays using the shape of the first battorch.
         first_batch = min(self.batch_size, total)
-        with ch.no_grad():
+        with torch.no_grad():
             first_masks, first_logit_probs = get_masks_and_logit_probs(
                 self.model,
                 self.tokenizer,
@@ -252,7 +253,7 @@ class ContextCiter:
         current_index = first_batch
         for start in tqdm(range(first_batch, total, self.batch_size)):
             current_batch = min(self.batch_size, total - start)
-            with ch.no_grad():
+            with torch.no_grad():
                 batch_masks, batch_logit_probs = get_masks_and_logit_probs(
                     self.model,
                     self.tokenizer,
@@ -267,7 +268,7 @@ class ContextCiter:
             all_masks[current_index : current_index + current_batch] = batch_masks
             all_logit_probs[current_index : current_index + current_batch] = batch_logit_probs
             current_index += current_batch
-            ch.cuda.empty_cache()  # Clear temporary CUDA memory after each mini-batch.
+            torch.cuda.empty_cache()  # Clear temporary CUDA memory after each mini-battorch.
 
         self._cache["reg_masks"] = all_masks
         self._cache["reg_logit_probs"] = all_logit_probs
@@ -369,3 +370,34 @@ class ContextCiter:
         if self._cache.get("pred_logit_probs") is None:
             self.get_pred_logit_probs()
         return self._cache["pred_logit_probs"]
+
+    @property
+    def _paraphrased_sources(self) -> List[str]:
+        if "paraphrased_sources" not in self._cache:
+            self._cache["paraphrased_sources"] = self._paraphrase_sources()
+        return self._cache["paraphrased_sources"]
+    
+    def _paraphrase_sources(self) -> List[str]:
+        paraphrased_sources = []
+        for source in tqdm(self.sources):
+            prompt = PARAPHRASE_PROMPT.format(sentence=source)
+            messages = [{"role": "user", "content": prompt}]
+            chat_prompt = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            ems = self.tokenizer(chat_prompt, add_special_tokens=False, return_attention_mask=True)
+            chat_prompt_ids = ems["input_ids"]
+            attention_mask = ems["attention_mask"]
+
+            input_ids = torch.tensor([chat_prompt_ids], device=self.model.device)
+            attention_mask = torch.tensor([attention_mask], device=self.model.device)
+
+            output_ids = self.model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                **self.generate_kwargs,
+                pad_token_id=self.tokenizer.eos_token_id
+            )[0]
+            raw_output = self.tokenizer.decode(output_ids)
+            paraphrased_sources.append(raw_output[len(chat_prompt):-len(self.tokenizer.eos_token)])
+        return paraphrased_sources
