@@ -29,7 +29,10 @@ SOLVERS = {
     "svr": SVRRegression,
     "elastic_net": ElasticNetRegression
 }
-PARAPHRASE_PROMPT = "Return a paraphrase of the following sentence: {sentence}"
+PARAPHRASE_PROMPT = """
+Rewrite the following sentence in your own words, and respond in one single sentence. Make sure that all technical details, specific terms and proper nouns are preserved exactly as they appear, while rephrasing the remaining content to improve clarity and style.
+Sentence: {sentence}
+"""
 
 class ContextCiter:
     def __init__(
@@ -372,13 +375,30 @@ class ContextCiter:
         return self._cache["pred_logit_probs"]
 
     @property
-    def _paraphrased_sources(self) -> List[str]:
+    def paraphrased_pairs(self) -> List[List[str]]:
+        """
+        Returns a list of [original_source, paraphrased_source] pairs.
+        """
+        if "paraphrased_pairs" not in self._cache:
+            # Call the actual paraphrase method once.
+            pairs = self._paraphrase()
+            self._cache["paraphrased_pairs"] = pairs
+            # Also cache a list of only the paraphrased sources, so we don't have to recompute.
+            self._cache["paraphrased_sources"] = [p[1] for p in pairs]
+        return self._cache["paraphrased_pairs"]
+
+    @property
+    def paraphrased_sources(self) -> List[str]:
+        """
+        Returns just the list of paraphrased sources.
+        """
+        # Make sure paraphrased_pairs is computed and cached. This sets paraphrased_sources too.
         if "paraphrased_sources" not in self._cache:
-            self._cache["paraphrased_sources"] = self._paraphrase_sources()
+            _ = self.paraphrased_pairs  # triggers paraphrase if needed
         return self._cache["paraphrased_sources"]
-    
-    def _paraphrase_sources(self) -> List[str]:
-        paraphrased_sources = []
+
+    def _paraphrase(self) -> List[str]:
+        paraphrased_pairs = []
         for source in tqdm(self.sources):
             prompt = PARAPHRASE_PROMPT.format(sentence=source)
             messages = [{"role": "user", "content": prompt}]
@@ -399,7 +419,7 @@ class ContextCiter:
                 pad_token_id=self.tokenizer.eos_token_id
             )[0]
             raw_output = self.tokenizer.decode(output_ids)
-            paraphrased_sources.append([
+            paraphrased_pairs.append([
                 source, raw_output[len(chat_prompt):-len(self.tokenizer.eos_token)]
             ])
-        return paraphrased_sources
+        return paraphrased_pairs
