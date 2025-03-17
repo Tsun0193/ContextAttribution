@@ -227,3 +227,67 @@ class ParagraphPartitioner(BaseContextPartitioner):
             context += part
         return context
 
+class CustomPartitioner(BaseContextPartitioner):
+    def __init__(self, context: str) -> None:
+        super().__init__(context)
+        self._cache = {}
+
+    def _preprocess_context(self, context: str) -> str:
+        # Replace double newlines with a single newline
+        context = context.replace("\n\n", "\n")
+        # Replace multiple consecutive spaces with one space
+        context = re.sub(r'\s+', ' ', context)
+        return context.strip()
+
+    def split_context(self) -> None:
+        preprocessed = self._preprocess_context(self.context)
+        # Split by periods and newline, while keeping the delimiters
+        tokens = re.split(r'([.\n])', preprocessed)
+        parts = []
+        separators = []
+        i = 0
+        while i < len(tokens):
+            # Get the text segment and trim it
+            segment = tokens[i].strip()
+            delimiter = ""
+            if i + 1 < len(tokens):
+                delimiter = tokens[i + 1]
+            # Only add non-empty segments
+            if segment:
+                parts.append(segment + delimiter)
+                separators.append(delimiter)
+            i += 2  # move to the next text segment (skip delimiter)
+        self._cache["parts"] = parts
+        self._cache["separators"] = separators
+
+    @property
+    def parts(self) -> List[str]:
+        if "parts" not in self._cache:
+            self.split_context()
+        return self._cache["parts"]
+
+    @property
+    def separators(self) -> List[str]:
+        if "separators" not in self._cache:
+            self.split_context()
+        return self._cache["separators"]
+
+    @property
+    def num_sources(self) -> int:
+        return len(self.parts)
+
+    def get_source(self, index: int) -> str:
+        return self.parts[index]
+
+    def get_context(self, mask: Optional[np.ndarray] = None) -> str:
+        if mask is None:
+            mask = np.ones(self.num_sources, dtype=bool)
+        # Use NumPy arrays to filter parts and separators based on the mask.
+        selected_parts = np.array(self.parts)[mask]
+        selected_seps = np.array(self.separators)[mask]
+        context = ""
+        for i, (sep, part) in enumerate(zip(selected_seps, selected_parts)):
+            if i > 0:
+                context += sep
+            context += part
+        return context
