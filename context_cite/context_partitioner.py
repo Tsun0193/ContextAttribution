@@ -228,6 +228,12 @@ class ParagraphPartitioner(BaseContextPartitioner):
         return context
 
 class CustomPartitioner(BaseContextPartitioner):
+    """
+    A custom context partitioner that splits the context by periods and newline characters.
+    It preprocesses the context to:
+      - Replace double newlines ("\n\n") with a single newline ("\n").
+      - Replace multiple consecutive spaces with a single space.
+    """
     def __init__(self, context: str) -> None:
         super().__init__(context)
         self._cache = {}
