@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor
-import torch
+import torch as ch
 from numpy.typing import NDArray
 from typing import Dict, Any, Optional, List, Tuple, Union
 from tqdm.auto import tqdm
@@ -29,10 +29,6 @@ SOLVERS = {
     "svr": SVRRegression,
     "elastic_net": ElasticNetRegression
 }
-PARAPHRASE_PROMPT = """
-Rewrite the following sentence in your own words, and respond in one single sentence. Make sure that all technical details, specific terms and proper nouns are preserved exactly as they appear, while rephrasing the remaining content to improve clarity and style.
-Sentence: {sentence}
-"""
 
 class ContextCiter:
     def __init__(
@@ -73,7 +69,7 @@ class ContextCiter:
 
         # Initialize the partitioner
         if partitioner is None:
-            self.partitioner = SimpleContextPartitioner(self.context)
+            self.partitioner = CustomPartitioner(self.context)
         else:
             self.partitioner = partitioner()
             if self.partitioner.context != self.context:
@@ -148,8 +144,8 @@ class ContextCiter:
     def _output(self) -> str:
         if self._cache.get("output") is None:
             prompt_ids, attention_mask, prompt = self._get_prompt_ids(return_prompt=True)
-            input_ids = torch.tensor([prompt_ids], device=self.model.device)
-            attention_mask = torch.tensor([attention_mask], device=self.model.device)
+            input_ids = ch.tensor([prompt_ids], device=self.model.device)
+            attention_mask = ch.tensor([attention_mask], device=self.model.device)
 
             output_ids = self.model.generate(
                 input_ids=input_ids,
@@ -231,32 +227,12 @@ class ContextCiter:
 
     def _compute_masks_and_logit_probs(self) -> None:
         total = self.num_ablations
-
-        # Preallocate arrays using the shape of the first battorch.
-        first_batch = min(self.batch_size, total)
-        with torch.no_grad():
-            first_masks, first_logit_probs = get_masks_and_logit_probs(
-                self.model,
-                self.tokenizer,
-                first_batch,
-                self.num_sources,
-                self._get_prompt_ids,
-                self._response_ids,
-                self.ablation_keep_prob,
-                batch_size=first_batch,
-                base_seed=0
-            )
-        masks_shape = (total,) + first_masks.shape[1:]
-        logit_shape = (total,) + first_logit_probs.shape[1:]
-        all_masks = np.empty(masks_shape, dtype=first_masks.dtype)
-        all_logit_probs = np.empty(logit_shape, dtype=first_logit_probs.dtype)
-        all_masks[:first_batch] = first_masks
-        all_logit_probs[:first_batch] = first_logit_probs
-
-        current_index = first_batch
-        for start in tqdm(range(first_batch, total, self.batch_size)):
+        masks_list = []
+        logit_probs_list = []
+        
+        for start in tqdm(range(0, total, self.batch_size)):
             current_batch = min(self.batch_size, total - start)
-            with torch.no_grad():
+            with ch.no_grad():
                 batch_masks, batch_logit_probs = get_masks_and_logit_probs(
                     self.model,
                     self.tokenizer,
@@ -268,11 +244,14 @@ class ContextCiter:
                     batch_size=current_batch,
                     base_seed=start
                 )
-            all_masks[current_index : current_index + current_batch] = batch_masks
-            all_logit_probs[current_index : current_index + current_batch] = batch_logit_probs
-            current_index += current_batch
-            torch.cuda.empty_cache()  # Clear temporary CUDA memory after each mini-battorch.
-
+            masks_list.append(batch_masks)
+            logit_probs_list.append(batch_logit_probs)
+            ch.cuda.empty_cache()  # Free up GPU memory after processing each batch.
+            del batch_masks, batch_logit_probs
+        # Concatenate all batches into a single array.
+        all_masks = np.concatenate(masks_list, axis=0)
+        all_logit_probs = np.concatenate(logit_probs_list, axis=0)
+        
         self._cache["reg_masks"] = all_masks
         self._cache["reg_logit_probs"] = all_logit_probs
 
@@ -373,53 +352,3 @@ class ContextCiter:
         if self._cache.get("pred_logit_probs") is None:
             self.get_pred_logit_probs()
         return self._cache["pred_logit_probs"]
-
-    @property
-    def paraphrased_pairs(self) -> List[List[str]]:
-        """
-        Returns a list of [original_source, paraphrased_source] pairs.
-        """
-        if "paraphrased_pairs" not in self._cache:
-            # Call the actual paraphrase method once.
-            pairs = self._paraphrase()
-            self._cache["paraphrased_pairs"] = pairs
-            # Also cache a list of only the paraphrased sources, so we don't have to recompute.
-            self._cache["paraphrased_sources"] = [p[1] for p in pairs]
-        return self._cache["paraphrased_pairs"]
-
-    @property
-    def paraphrased_sources(self) -> List[str]:
-        """
-        Returns just the list of paraphrased sources.
-        """
-        # Make sure paraphrased_pairs is computed and cached. This sets paraphrased_sources too.
-        if "paraphrased_sources" not in self._cache:
-            _ = self.paraphrased_pairs  # triggers paraphrase if needed
-        return self._cache["paraphrased_sources"]
-
-    def _paraphrase(self) -> List[str]:
-        paraphrased_pairs = []
-        for source in tqdm(self.sources):
-            prompt = PARAPHRASE_PROMPT.format(sentence=source)
-            messages = [{"role": "user", "content": prompt}]
-            chat_prompt = self.tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            ems = self.tokenizer(chat_prompt, add_special_tokens=False, return_attention_mask=True)
-            chat_prompt_ids = ems["input_ids"]
-            attention_mask = ems["attention_mask"]
-
-            input_ids = torch.tensor([chat_prompt_ids], device=self.model.device)
-            attention_mask = torch.tensor([attention_mask], device=self.model.device)
-
-            output_ids = self.model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                **self.generate_kwargs,
-                pad_token_id=self.tokenizer.eos_token_id
-            )[0]
-            raw_output = self.tokenizer.decode(output_ids)
-            paraphrased_pairs.append([
-                source, raw_output[len(chat_prompt):-len(self.tokenizer.eos_token)]
-            ])
-        return paraphrased_pairs
