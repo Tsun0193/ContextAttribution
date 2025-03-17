@@ -176,3 +176,54 @@ class SentencePeriodPartitioner(BaseContextPartitioner):
                 context += separator
             context += part
         return context
+
+class ParagraphPartitioner(BaseContextPartitioner):
+    """
+    A context partitioner that splits the context into sources based on paragraphs.
+    Paragraphs are assumed to be separated by double line breaks.
+    """
+    def __init__(self, context: str) -> None:
+        super().__init__(context)
+        self._cache = {}
+
+    def split_context(self):
+        # Split on double newlines and filter out empty paragraphs.
+        paragraphs = [p.strip() for p in self.context.split("\n\n") if p.strip()]
+        # Create a list of separators. For simplicity, we assume "\n\n" between paragraphs.
+        # The first paragraph has no separator.
+        separators = [""] + ["\n\n" for _ in range(len(paragraphs) - 1)]
+        self._cache["parts"] = paragraphs
+        self._cache["separators"] = separators
+
+    @property
+    def parts(self) -> List[str]:
+        if "parts" not in self._cache:
+            self.split_context()
+        return self._cache["parts"]
+
+    @property
+    def separators(self) -> List[str]:
+        if "separators" not in self._cache:
+            self.split_context()
+        return self._cache["separators"]
+
+    @property
+    def num_sources(self) -> int:
+        return len(self.parts)
+
+    def get_source(self, index: int) -> str:
+        return self.parts[index]
+
+    def get_context(self, mask: Optional[np.ndarray] = None):
+        if mask is None:
+            mask = np.ones(self.num_sources, dtype=bool)
+        # Select only the parts and separators that are not masked out.
+        parts = np.array(self.parts)[mask]
+        separators = np.array(self.separators)[mask]
+        context = ""
+        for i, (sep, part) in enumerate(zip(separators, parts)):
+            if i > 0:
+                context += sep
+            context += part
+        return context
+
