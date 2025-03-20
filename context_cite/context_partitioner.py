@@ -104,7 +104,8 @@ class SimpleContextPartitioner(BaseContextPartitioner):
 class SentencePeriodPartitioner(BaseContextPartitioner):
     """
     A context partitioner that splits the context into sources based on periods (`.`)
-    and filters out sentences with fewer than 3 words.
+    and filters out sentences with fewer than 3 words. It also preprocesses markdown 
+    formatting that might be present when a PDF is parsed into markdown.
     """
 
     def __init__(self, context: str) -> None:
@@ -113,25 +114,45 @@ class SentencePeriodPartitioner(BaseContextPartitioner):
 
     def _preprocess_context(self, context: str) -> str:
         """
-        Preprocess the context to remove unexpected formats, extra spaces, and non-standard characters.
-
+        Preprocess the context to remove markdown formatting, extra spaces,
+        line breaks, and non-standard characters.
+        
+        Markdown preprocessing steps include:
+          - Converting markdown links [text](url) to plain text.
+          - Removing image markdown ![alt](url).
+          - Removing markdown headers (lines starting with one or more #).
+          - Stripping bold/italic formatting markers (e.g., **, __, *, _).
+          - Removing inline code markers (backticks).
+          - Collapsing multiple whitespace characters into a single space.
+          
         Args:
             context (str): The input context.
-
+            
         Returns:
             str: The preprocessed context.
         """
-        # Remove extra spaces, line breaks, and non-standard characters
-        context = re.sub(r'\s+', ' ', context)  # Replace multiple spaces with a single space
-        context = context.strip()  # Remove leading/trailing spaces
-        return context
+        # Convert markdown links: [text](url) -> text
+        context = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', context)
+        # Convert image markdown: ![alt](url) -> alt
+        context = re.sub(r'!\[(.*?)\]\(.*?\)', r'\1', context)
+        # Remove markdown headers (lines starting with #)
+        context = re.sub(r'(?m)^#+\s*', '', context)
+        # Remove bold/italic markers (e.g., **, __)
+        context = re.sub(r'(\*\*|__)(.*?)\1', r'\2', context)
+        # Remove italic markers (e.g., * or _)
+        context = re.sub(r'(\*|_)(.*?)\1', r'\2', context)
+        # Remove inline code markers (backticks)
+        context = re.sub(r'`(.*?)`', r'\1', context)
+        # Collapse multiple whitespace/newlines into a single space
+        context = re.sub(r'\s+', ' ', context)
+        return context.strip()
 
     def split_context(self):
         """Split text into parts and cache the parts and separators."""
-        # Preprocess the context
+        # Preprocess the context to clean up markdown and extra spaces.
         preprocessed_context = self._preprocess_context(self.context)
 
-        # Split the context into parts based on periods
+        # Split the context into parts based on periods (keeping the period as a separator)
         parts, separators, _ = split_text(preprocessed_context, split_by="period")
 
         # Filter out parts with fewer than 3 words
@@ -165,7 +186,7 @@ class SentencePeriodPartitioner(BaseContextPartitioner):
     def get_source(self, index: int) -> str:
         return self.parts[index]
 
-    def get_context(self, mask: Optional[NDArray] = None):
+    def get_context(self, mask: Optional[NDArray] = None) -> str:
         if mask is None:
             mask = np.ones(self.num_sources, dtype=bool)
         separators = np.array(self.separators)[mask]
