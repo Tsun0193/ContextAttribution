@@ -69,7 +69,7 @@ class ContextCiter:
 
         # Initialize the partitioner
         if partitioner is None:
-            self.partitioner = CustomPartitioner(self.context)
+            self.partitioner = SentencePeriodPartitioner(self.context)
         else:
             self.partitioner = partitioner()
             if self.partitioner.context != self.context:
