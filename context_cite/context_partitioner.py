@@ -113,24 +113,6 @@ class SentencePeriodPartitioner(BaseContextPartitioner):
         self._cache = {}
 
     def _preprocess_context(self, context: str) -> str:
-        """
-        Preprocess the context to remove markdown formatting, extra spaces,
-        line breaks, and non-standard characters.
-        
-        Markdown preprocessing steps include:
-          - Converting markdown links [text](url) to plain text.
-          - Removing image markdown ![alt](url).
-          - Removing markdown headers (lines starting with one or more #).
-          - Stripping bold/italic formatting markers (e.g., **, __, *, _).
-          - Removing inline code markers (backticks).
-          - Collapsing multiple whitespace characters into a single space.
-          
-        Args:
-            context (str): The input context.
-            
-        Returns:
-            str: The preprocessed context.
-        """
         # Convert markdown links: [text](url) -> text
         context = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', context)
         # Convert image markdown: ![alt](url) -> alt
@@ -147,23 +129,43 @@ class SentencePeriodPartitioner(BaseContextPartitioner):
         context = re.sub(r'\s+', ' ', context)
         return context.strip()
 
+    def _smart_sentence_split(self, text):
+        sentences = []
+        buffer = ""
+        i = 0
+        while i < len(text):
+            char = text[i]
+            buffer += char
+            if char == ".":
+                next_char = text[i + 1] if i + 1 < len(text) else ""
+                prev_char = text[i - 1] if i - 1 >= 0 else ""
+
+                is_decimal = prev_char.isdigit() and next_char.isdigit()
+                is_abbreviation = prev_char.isupper() and next_char == " "
+
+                if not is_decimal and not is_abbreviation:
+                    lookahead = text[i+1:i+3]
+                    if re.match(r"\s+[A-Z]", lookahead):
+                        sentences.append(buffer.strip())
+                        buffer = ""
+            i += 1
+
+        if buffer.strip():
+            sentences.append(buffer.strip())
+        return sentences
+
     def split_context(self):
-        """Split text into parts and cache the parts and separators."""
-        # Preprocess the context to clean up markdown and extra spaces.
         preprocessed_context = self._preprocess_context(self.context)
+        parts = self._smart_sentence_split(preprocessed_context)
+        separators = ['.'] * len(parts)
 
-        # Split the context into parts based on periods (keeping the period as a separator)
-        parts, separators, _ = split_text(preprocessed_context, split_by="period")
-
-        # Filter out parts with fewer than 3 words
         filtered_parts = []
         filtered_separators = []
         for part, separator in zip(parts, separators):
-            if len(part.split()) >= 3:  # Keep only parts with 3 or more words
+            if len(part.split()) >= 3:
                 filtered_parts.append(part)
                 filtered_separators.append(separator)
 
-        # Cache the filtered parts and separators
         self._cache["parts"] = filtered_parts
         self._cache["separators"] = filtered_separators
 
