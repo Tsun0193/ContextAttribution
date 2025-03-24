@@ -9,14 +9,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from .context_partitioner import *
 from .solver import *
-from .utils import (
-    get_masks_and_logit_probs,
-    aggregate_logit_probs,
-    split_text,
-    highlight_word_indices,
-    get_attributions_df,
-    char_to_token,
-)
+from .utils import *
 
 DEFAULT_GENERATE_KWARGS = {"max_new_tokens": 512, "do_sample": False}
 DEFAULT_PROMPT_TEMPLATE = "Context: {context}\n\nQuery: {query}"
@@ -54,7 +47,7 @@ class ContextCiter:
         """
         self.model = model
         self.tokenizer = tokenizer
-        self.context = context
+        self.context = 
         self.query = query
         self.generate_kwargs = generate_kwargs or DEFAULT_GENERATE_KWARGS
         self.num_ablations = num_ablations

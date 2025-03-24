@@ -1,3 +1,4 @@
+import re
 import nltk
 import numpy as np
 import pandas as pd
@@ -9,6 +10,9 @@ from typing import Any, List, Optional, Tuple
 from datasets import Dataset
 from torch.utils.data import DataLoader
 from transformers import DataCollatorForSeq2Seq
+from rank_bm25 import BM25Okapi
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 # nltk.download("punkt_tab")
 
@@ -230,3 +234,54 @@ def char_to_token(output_tokens, char_index):
         if char_index < output_tokens.token_to_chars(i + 1).start:
             return i
     return i + 1
+
+def filter_context(context: str, response: str, bm25_top_k: int = 10, semantic_top_k: int = 5, max_length: int = None) -> str:
+    """
+    Filter the full context by:
+      1. Splitting into paragraphs (based on double newlines).
+      2. Ranking paragraphs using BM25 Okapi against the response.
+      3. Refining the ranking using TF-IDF cosine similarity.
+      4. Merging the top paragraphs (preserving their original order).
+      5. Optionally truncating to a maximum length.
+    """
+    # Preprocess: collapse multiple spaces but preserve paragraph breaks.
+    def preprocess(text: str) -> str:
+        # Collapse spaces but preserve newlines.
+        text = re.sub(r'[ \t]+', ' ', text)
+        # Normalize newlines to double newlines.
+        text = re.sub(r'\n+', '\n\n', text)
+        return text.strip()
+    
+    context = preprocess(context)
+    
+    # Partition into paragraphs using double newline.
+    paragraphs = [p.strip() for p in re.split(r'\n\s*\n', context) if p.strip()]
+    if not paragraphs:
+        return context
+    
+    # BM25 ranking.
+    tokenized_paragraphs = [p.split() for p in paragraphs]
+    bm25 = BM25Okapi(tokenized_paragraphs)
+    query_tokens = response.split()
+    scores = bm25.get_scores(query_tokens)
+    ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+    top_bm25 = [idx for idx, score in ranked[:bm25_top_k]]
+    
+    # Semantic filtering using TF-IDF cosine similarity.
+    candidates = [paragraphs[i] for i in top_bm25]
+    vectorizer = TfidfVectorizer()
+    vectors = vectorizer.fit_transform(candidates + [response])
+    response_vector = vectors[-1]
+    candidate_vectors = vectors[:-1]
+    similarities = cosine_similarity(candidate_vectors, response_vector).flatten()
+    ranked_semantic = sorted(enumerate(similarities), key=lambda x: x[1], reverse=True)
+    top_semantic = [top_bm25[i] for i, sim in ranked_semantic[:semantic_top_k]]
+    
+    # Merge selected paragraphs in their original order.
+    top_indices = sorted(top_semantic)
+    filtered_text = "\n\n".join([paragraphs[i] for i in top_indices])
+    
+    if max_length is not None and len(filtered_text) > max_length:
+        filtered_text = filtered_text[:max_length]
+    
+    return filtered_text
