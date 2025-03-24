@@ -38,12 +38,14 @@ class ContextCiter:
         batch_size: int = 1,
         prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
         partitioner: Optional[BaseContextPartitioner] = None,
+        quantized: bool = False  # new optional flag
     ) -> None:
         """
         Initializes a new instance of the ContextCiter class, which automates the process of:
         1) splitting a context into multiple sources,
         2) generating a response from an LLM using the query and context,
         3) attributing which sources contributed the most to the response.
+        If quantized is True, the model is assumed to be loaded in 8-bit quantized mode.
         """
         self.model = model
         self.tokenizer = tokenizer
@@ -59,6 +61,7 @@ class ContextCiter:
         else:
             self.solver = SOLVERS[solver]()
         self.prompt_template = prompt_template
+        self.quantized = quantized  # store quantized flag
 
         # Initialize the partitioner
         if partitioner is None:
@@ -86,20 +89,31 @@ class ContextCiter:
         device: str = "cuda",
         model_kwargs: Dict[str, Any] = {},
         tokenizer_kwargs: Dict[str, Any] = {},
+        quantized: bool = False,  # new optional argument
         **kwargs: Dict[str, Any],
     ) -> "ContextCiter":
         """
         Load a ContextCiter instance from a pretrained model.
+        If quantized is True, load the model in 8-bit mode.
         """
-        model = AutoModelForCausalLM.from_pretrained(
-            pretrained_model_name_or_path, **model_kwargs
-        )
-        model.to(device)
+        if quantized:
+            # Load the model in 8-bit quantized mode (requires bitsandbytes)
+            model = AutoModelForCausalLM.from_pretrained(
+                pretrained_model_name_or_path,
+                load_in_8bit=True,
+                device_map="auto",
+                **model_kwargs
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                pretrained_model_name_or_path, **model_kwargs
+            )
+            model.to(device)
         tokenizer = AutoTokenizer.from_pretrained(
             pretrained_model_name_or_path, **tokenizer_kwargs
         )
         tokenizer.padding_side = "left"
-        return cls(model, tokenizer, context, query, solver, **kwargs)
+        return cls(model, tokenizer, context, query, solver, **kwargs, quantized=quantized)
 
     def _get_prompt_ids(
         self,
@@ -154,7 +168,7 @@ class ContextCiter:
 
     @property
     def _output_tokens(self) -> Dict[str, Any]:
-        # Cache the tokenized output so it is computed only once.
+        # Cache the tokenized output so that it is computed only once.
         if "output_tokens" not in self._cache:
             self._cache["output_tokens"] = self.tokenizer(self._output, add_special_tokens=False)
         return self._cache["output_tokens"]
@@ -198,7 +212,7 @@ class ContextCiter:
             partitioner.split_context()
             self._cache["filtered_partition"] = partitioner
         return self._cache["filtered_partition"].num_sources
-    
+
     @property
     def sources(self) -> List[str]:
         """
@@ -210,7 +224,6 @@ class ContextCiter:
             partitioner.split_context()
             self._cache["filtered_partition"] = partitioner
         return self._cache["filtered_partition"].sources
-
 
     def _char_range_to_token_range(self, start_index: int, end_index: int) -> Tuple[int, int]:
         output_tokens = self._output_tokens
@@ -277,7 +290,6 @@ class ContextCiter:
         outputs = aggregate_logit_probs(self._logit_probs[:, ids_start_idx:ids_end_idx])
         self._cache["actual_logit_probs"] = outputs
         num_output_tokens = ids_end_idx - ids_start_idx
-        # weight, bias = self.solver.fit(self._masks, outputs, num_output_tokens)
         weight, bias = self.solver.fit(self._masks, outputs, self.num_sources)
         return weight, bias
 
@@ -299,19 +311,15 @@ class ContextCiter:
         """
         # After the response is generated, update the partitioner to use a filtered context.
         if not self._cache.get("filtered_partition"):
-            # Use your filtering logic (from your helper module) to produce a filtered context.
-            # Here we assume you have imported filter_context from your helper module.
             filtered_ctx = filter_context(
                 self.context,
                 self.response,
                 bm25_top_k=20,
                 semantic_top_k=16
             )
-            # Partition the filtered context using your SentencePeriodPartitioner.
             partitioner = SentencePeriodPartitioner(filtered_ctx)
             partitioner.split_context()
             self._cache["filtered_partition"] = partitioner
-            # Replace the partitioner used for prompt/ablation with the filtered one.
             self.partitioner = partitioner
     
         if self.num_sources == 0:
@@ -341,7 +349,6 @@ class ContextCiter:
             return get_attributions_df(attributions, self.partitioner, top_k=top_k)
         else:
             return attributions
-
 
     def get_pred_logit_probs(
         self, start_idx: Optional[int] = None, end_idx: Optional[int] = None
