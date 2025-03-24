@@ -347,6 +347,10 @@ class HybridPartitioner(BaseContextPartitioner):
         self._final_partitioner = None
 
     def _preprocess_text(self, text: str) -> str:
+        # Collapse multiple spaces but preserve newlines.
+        text = re.sub(r'[ \t]+', ' ', text)
+        # Normalize newlines: collapse multiple newlines into two (to mark paragraph boundaries).
+        text = re.sub(r'\n+', '\n\n', text)
         return text.strip()
     
     def _paragraph_partition(self) -> List[str]:
