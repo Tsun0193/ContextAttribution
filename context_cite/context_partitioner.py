@@ -1,9 +1,12 @@
 import numpy as np
 import re
 from numpy.typing import NDArray
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from abc import ABC, abstractmethod
 from .utils import split_text
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from rank_bm25 import BM25Okapi
 
 
 class BaseContextPartitioner(ABC):
@@ -316,6 +319,131 @@ class CustomPartitioner(BaseContextPartitioner):
         selected_seps = np.array(self.separators)[mask]
         context = ""
         for i, (sep, part) in enumerate(zip(selected_seps, selected_parts)):
+            if i > 0:
+                context += sep
+            context += part
+        return context
+class HybridPartitioner(BaseContextPartitioner):
+    """
+    A hybrid context partitioner that combines BM25 Okapi and semantic filtering 
+    to identify the most relevant paragraphs to a target response. It then merges 
+    these paragraphs and applies sentence/period splitting (via SentencePeriodPartitioner)
+    to obtain fine-grained sources.
+    
+    Pipeline:
+      1. Partition the original context into paragraphs (splitting on double newlines).
+      2. Use BM25 Okapi to rank paragraphs against the provided response and select the top BM25 candidates.
+      3. Refine the selection using TF‑IDF cosine similarity to choose the top semantic paragraphs.
+      4. Merge the selected paragraphs in their original order.
+      5. Apply SentencePeriodPartitioner on the merged text to obtain the final sources.
+    """
+    def __init__(self, context: str, response: str, bm25_top_k: int = 10, semantic_top_k: int = 5) -> None:
+        super().__init__(context)
+        self.response = response
+        self.bm25_top_k = bm25_top_k
+        self.semantic_top_k = semantic_top_k
+        self._cache = {}
+        self._final_partitioner = None
+
+    def _preprocess_text(self, text: str) -> str:
+        # Collapse extra whitespace and normalize newlines
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
+    
+    def _paragraph_partition(self) -> List[str]:
+        """
+        Partition the context into paragraphs by splitting on double newlines.
+        """
+        preprocessed = self._preprocess_text(self.context)
+        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', preprocessed) if p.strip()]
+        return paragraphs
+
+    def _bm25_filter(self, paragraphs: List[str]) -> List[int]:
+        """
+        Rank paragraphs using BM25 Okapi with the response as the query.
+        Returns the indices of the top bm25_top_k paragraphs.
+        """
+        tokenized_paragraphs = [p.split() for p in paragraphs]
+        bm25 = BM25Okapi(tokenized_paragraphs)
+        query_tokens = self.response.split()
+        scores = bm25.get_scores(query_tokens)
+        ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+        top_indices = [idx for idx, score in ranked[:self.bm25_top_k]]
+        return top_indices
+
+    def _semantic_filter(self, paragraphs: List[str], candidate_indices: List[int]) -> List[int]:
+        """
+        From the candidate paragraphs (by index), compute semantic similarity 
+        with the response using TF‑IDF cosine similarity and select the top semantic_top_k indices.
+        """
+        candidates = [paragraphs[i] for i in candidate_indices]
+        vectorizer = TfidfVectorizer()
+        vectors = vectorizer.fit_transform(candidates + [self.response])
+        response_vector = vectors[-1]
+        candidate_vectors = vectors[:-1]
+        similarities = cosine_similarity(candidate_vectors, response_vector)
+        similarities = similarities.flatten()
+        ranked = sorted(enumerate(similarities), key=lambda x: x[1], reverse=True)
+        top_semantic = [candidate_indices[i] for i, score in ranked[:self.semantic_top_k]]
+        return top_semantic
+
+    def _merge_paragraphs(self, paragraphs: List[str], indices: List[int]) -> str:
+        """
+        Merge the selected paragraphs (ordered by their original appearance) into one text.
+        """
+        selected = [paragraphs[i] for i in sorted(indices)]
+        return "\n\n".join(selected)
+
+    def split_context(self) -> None:
+        """
+        Execute the hybrid partitioning pipeline:
+          1. Partition context into paragraphs.
+          2. Rank paragraphs using BM25 and then semantic filtering.
+          3. Merge the top paragraphs.
+          4. Apply SentencePeriodPartitioner on the merged text.
+        """
+        paragraphs = self._paragraph_partition()
+        if not paragraphs:
+            # Fallback: use the entire context if no paragraphs are found.
+            merged_text = self.context
+        else:
+            bm25_indices = self._bm25_filter(paragraphs)
+            semantic_indices = self._semantic_filter(paragraphs, bm25_indices)
+            merged_text = self._merge_paragraphs(paragraphs, semantic_indices)
+        
+        # Use the existing SentencePeriodPartitioner on the merged text.
+        self._final_partitioner = SentencePeriodPartitioner(merged_text)
+        self._final_partitioner.split_context()
+        # Cache the parts and separators.
+        self._cache["parts"] = self._final_partitioner.parts
+        self._cache["separators"] = self._final_partitioner.separators
+
+    @property
+    def parts(self) -> List[str]:
+        if "parts" not in self._cache:
+            self.split_context()
+        return self._cache["parts"]
+
+    @property
+    def separators(self) -> List[str]:
+        if "separators" not in self._cache:
+            self.split_context()
+        return self._cache["separators"]
+
+    @property
+    def num_sources(self) -> int:
+        return len(self.parts)
+
+    def get_source(self, index: int) -> str:
+        return self.parts[index]
+
+    def get_context(self, mask: Optional[NDArray] = None) -> str:
+        if mask is None:
+            mask = np.ones(self.num_sources, dtype=bool)
+        sel_seps = np.array(self.separators)[mask]
+        sel_parts = np.array(self.parts)[mask]
+        context = ""
+        for i, (sep, part) in enumerate(zip(sel_seps, sel_parts)):
             if i > 0:
                 context += sep
             context += part
