@@ -44,13 +44,12 @@ class ContextCiter:
         ablation_keep_prob: float = 0.5,
         batch_size: int = 1,
         prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
-        partitioner: Optional[BaseContextPartitioner] = None,
+        partitioner: Optional[Any] = None,
     ) -> None:
         """
-        Initializes a new instance of the ContextCiter class, which automates the process of:
-        1) splitting a context into multiple sources,
-        2) generating a response from an LLM using the query and context,
-        3) attributing which sources contributed the most to the response.
+        Initializes a new instance of the ContextCiter class.
+        When using a HybridPartitioner (which requires the response), the partitioning
+        is delayed until after the response is generated.
         """
         self.model = model
         self.tokenizer = tokenizer
@@ -60,23 +59,32 @@ class ContextCiter:
         self.num_ablations = num_ablations
         self.ablation_keep_prob = ablation_keep_prob
         self.batch_size = batch_size
-        self.solver = solver
-        if self.solver is None:
+        if solver is None:
             self.solver = LassoRegression()
         else:
             self.solver = SOLVERS[solver]()
         self.prompt_template = prompt_template
 
-        # Initialize the partitioner
+        # --- Modified partitioner initialization ---
+        # If no partitioner is provided, use SentencePeriodPartitioner.
+        # If a partitioner is provided and is HybridPartitioner,
+        # delay its instantiation because it requires the response.
         if partitioner is None:
             self.partitioner = SentencePeriodPartitioner(self.context)
+            self._hybrid_partition = False
+        elif isinstance(partitioner, type) and issubclass(partitioner, BaseContextPartitioner) and partitioner.__name__ == "HybridPartitioner":
+            # Store the class for later instantiation
+            self._partitioner_class = partitioner
+            self.partitioner = None
+            self._hybrid_partition = True
         else:
-            self.partitioner = partitioner()
-            if self.partitioner.context != self.context:
-                raise ValueError("Partitioner context does not match provided context.")
+            self.partitioner = partitioner(self.context)
+            self._hybrid_partition = False
 
-        # Preprocess the context and split it into sources
-        self.partitioner.split_context()
+        # For non-hybrid partitioners, precompute partitioning immediately.
+        if not self._hybrid_partition:
+            self.partitioner.split_context()
+        # ------------------------------------------------
 
         self._cache: Dict[str, Any] = {}
 
@@ -116,8 +124,12 @@ class ContextCiter:
         # Cache the unmasked prompt tokens so that repeated calls are faster.
         if mask is None and not return_prompt and "prompt_ids" in self._cache:
             return self._cache["prompt_ids"]
-
-        context = self.partitioner.get_context(mask)
+        # --- If using a hybrid partitioner, use the full context for prompt generation ---
+        if self._hybrid_partition:
+            context = self.context
+        else:
+            context = self.partitioner.get_context(mask)
+        # --------------------------------------------------------------------------
         prompt = self.prompt_template.format(context=context, query=self.query)
         messages = [{"role": "user", "content": prompt}]
         chat_prompt = self.tokenizer.apply_chat_template(
@@ -196,15 +208,32 @@ class ContextCiter:
     def num_sources(self) -> int:
         """
         The number of sources within the context.
+        For a hybrid partitioner, ensure that it is instantiated (using the generated response)
+        before returning the number.
         """
-        return self.partitioner.num_sources
+        if self._hybrid_partition:
+            if self.partitioner is None:
+                # Instantiate the hybrid partitioner now that the response is available.
+                self.partitioner = self._partitioner_class(self.context, self.response)
+                self.partitioner.split_context()
+            return self.partitioner.num_sources
+        else:
+            return self.partitioner.num_sources
 
     @property
     def sources(self) -> List[str]:
         """
         The sources within the context.
+        For a hybrid partitioner, ensure that it is instantiated (using the generated response)
+        before returning the sources.
         """
-        return self.partitioner.sources
+        if self._hybrid_partition:
+            if self.partitioner is None:
+                self.partitioner = self._partitioner_class(self.context, self.response)
+                self.partitioner.split_context()
+            return self.partitioner.sources
+        else:
+            return self.partitioner.sources
 
     def _char_range_to_token_range(self, start_index: int, end_index: int) -> Tuple[int, int]:
         output_tokens = self._output_tokens
@@ -271,7 +300,6 @@ class ContextCiter:
         outputs = aggregate_logit_probs(self._logit_probs[:, ids_start_idx:ids_end_idx])
         self._cache["actual_logit_probs"] = outputs
         num_output_tokens = ids_end_idx - ids_start_idx
-        # weight, bias = self.solver.fit(self._masks, outputs, num_output_tokens)
         weight, bias = self.solver.fit(self._masks, outputs, self.num_sources)
         return weight, bias
 
@@ -329,20 +357,9 @@ class ContextCiter:
             fτ(v) = ⟨weight, v⟩ + bias,
         where (weight, bias) are obtained by regressing the actual aggregated logit 
         probabilities (from the selected part of the response) against the ablation masks.
-        
-        Parameters:
-            start_idx (Optional[int]): The starting character index of the response for attribution.
-            end_idx (Optional[int]): The ending character index of the response for attribution.
-        
-        Returns:
-            NDArray: An array of predicted logit probabilities (one per ablation mask).
         """
-        # Convert character indices into token indices.
         ids_start_idx, ids_end_idx = self._indices_to_token_indices(start_idx, end_idx)
-        # Fit the regression model to obtain weights and bias.
         weight, bias = self._get_attributions_for_ids_range(ids_start_idx, ids_end_idx)
-        # Compute predicted logit probabilities for each ablation vector:
-        # fτ(v) = dot(weight, v) + bias.
         pred_logit_probs = self._masks @ weight + bias
         self._cache["pred_logit_probs"] = pred_logit_probs
         return pred_logit_probs
