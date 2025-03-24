@@ -318,6 +318,7 @@ class ContextCiter:
         """
         Get the attributions for (part of) the response.
         """
+        self.partitioner.split_context()
         if self.num_sources == 0:
             print("[Warning] No sources to attribute to!")
             return np.array([])
