@@ -47,7 +47,7 @@ class ContextCiter:
         """
         self.model = model
         self.tokenizer = tokenizer
-        self.context = 
+        self.context = context
         self.query = query
         self.generate_kwargs = generate_kwargs or DEFAULT_GENERATE_KWARGS
         self.num_ablations = num_ablations
@@ -188,16 +188,29 @@ class ContextCiter:
     @property
     def num_sources(self) -> int:
         """
-        The number of sources within the context.
+        For a filtered context, re-partition the context using the SentencePeriodPartitioner
+        on the filtered version (generated from the full context and the response).
         """
-        return self.partitioner.num_sources
-
+        if not self._cache.get("filtered_partition"):
+            # Increase parameters to produce a longer filtered context.
+            filtered_ctx = filter_context(self.context, self.response, bm25_top_k=20, semantic_top_k=16)
+            partitioner = SentencePeriodPartitioner(filtered_ctx)
+            partitioner.split_context()
+            self._cache["filtered_partition"] = partitioner
+        return self._cache["filtered_partition"].num_sources
+    
     @property
     def sources(self) -> List[str]:
         """
-        The sources within the context.
+        Return the sources from the filtered context.
         """
-        return self.partitioner.sources
+        if not self._cache.get("filtered_partition"):
+            filtered_ctx = filter_context(self.context, self.response, bm25_top_k=20, semantic_top_k=16)
+            partitioner = SentencePeriodPartitioner(filtered_ctx)
+            partitioner.split_context()
+            self._cache["filtered_partition"] = partitioner
+        return self._cache["filtered_partition"].sources
+
 
     def _char_range_to_token_range(self, start_index: int, end_index: int) -> Tuple[int, int]:
         output_tokens = self._output_tokens
@@ -273,23 +286,41 @@ class ContextCiter:
         return self._cache["actual_logit_probs"]
 
     def get_attributions(
-        self,
-        start_idx: Optional[int] = None,
-        end_idx: Optional[int] = None,
-        as_dataframe: bool = False,
-        top_k: Optional[int] = None,
-        verbose: bool = True,
-    ) -> Union[NDArray, Any]:
+            self,
+            start_idx: Optional[int] = None,
+            end_idx: Optional[int] = None,
+            as_dataframe: bool = False,
+            top_k: Optional[int] = None,
+            verbose: bool = True,
+        ) -> Union[NDArray, Any]:
         """
         Get the attributions for (part of) the response.
+        Before computing attributions, re-filter the context using the full context and the generated response.
         """
+        # After the response is generated, update the partitioner to use a filtered context.
+        if not self._cache.get("filtered_partition"):
+            # Use your filtering logic (from your helper module) to produce a filtered context.
+            # Here we assume you have imported filter_context from your helper module.
+            filtered_ctx = filter_context(
+                self.context,
+                self.response,
+                bm25_top_k=20,
+                semantic_top_k=16
+            )
+            # Partition the filtered context using your SentencePeriodPartitioner.
+            partitioner = SentencePeriodPartitioner(filtered_ctx)
+            partitioner.split_context()
+            self._cache["filtered_partition"] = partitioner
+            # Replace the partitioner used for prompt/ablation with the filtered one.
+            self.partitioner = partitioner
+    
         if self.num_sources == 0:
             print("[Warning] No sources to attribute to!")
             return np.array([])
-
+    
         if not as_dataframe and top_k is not None:
             print("[Warning] top_k is ignored when not using dataframes.")
-
+    
         ids_start_idx, ids_end_idx = self._indices_to_token_indices(start_idx, end_idx)
         selected_text = self.response[start_idx:end_idx]
         selected_tokens = self._response_ids[ids_start_idx:ids_end_idx]
@@ -301,15 +332,16 @@ class ContextCiter:
                 f"What you selected: {selected_text.strip()}\n"
                 f"What is being attributed: {decoded_text.strip()}"
             )
-
+    
         if verbose:
             print(f"Attributed: {decoded_text.strip()}")
-
+    
         attributions, _bias = self._get_attributions_for_ids_range(ids_start_idx, ids_end_idx)
         if as_dataframe:
             return get_attributions_df(attributions, self.partitioner, top_k=top_k)
         else:
             return attributions
+
 
     def get_pred_logit_probs(
         self, start_idx: Optional[int] = None, end_idx: Optional[int] = None
