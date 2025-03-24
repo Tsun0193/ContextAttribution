@@ -250,8 +250,6 @@ class ContextCiter:
                     batch_size=current_batch,
                     base_seed=start
                 )
-            batch_masks = batch_masks.cpu().detach()
-            batch_logit_probs = batch_logit_probs.cpu().detach()
             masks_list.append(batch_masks)
             logit_probs_list.append(batch_logit_probs)
             ch.cuda.empty_cache()  # Free up GPU memory after processing each batch.
