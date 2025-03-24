@@ -323,18 +323,19 @@ class CustomPartitioner(BaseContextPartitioner):
                 context += sep
             context += part
         return context
+
 class HybridPartitioner(BaseContextPartitioner):
     """
     A hybrid context partitioner that combines BM25 Okapi and semantic filtering 
     to identify the most relevant paragraphs to a target response. It then merges 
-    these paragraphs and applies sentence/period splitting (via SentencePeriodPartitioner)
-    to obtain fine-grained sources.
+    these paragraphs and applies SentencePeriodPartitioner on the merged text to 
+    obtain fine-grained sources.
     
     Pipeline:
       1. Partition the original context into paragraphs (splitting on double newlines).
       2. Use BM25 Okapi to rank paragraphs against the provided response and select the top BM25 candidates.
       3. Refine the selection using TF‑IDF cosine similarity to choose the top semantic paragraphs.
-      4. Merge the selected paragraphs in their original order.
+      4. Merge the selected paragraphs (preserving original order).
       5. Apply SentencePeriodPartitioner on the merged text to obtain the final sources.
     """
     def __init__(self, context: str, response: str, bm25_top_k: int = 10, semantic_top_k: int = 5) -> None:
@@ -346,8 +347,6 @@ class HybridPartitioner(BaseContextPartitioner):
         self._final_partitioner = None
 
     def _preprocess_text(self, text: str) -> str:
-        # Collapse extra whitespace and normalize newlines
-        text = re.sub(r'\s+', ' ', text)
         return text.strip()
     
     def _paragraph_partition(self) -> List[str]:
@@ -404,17 +403,21 @@ class HybridPartitioner(BaseContextPartitioner):
         """
         paragraphs = self._paragraph_partition()
         if not paragraphs:
-            # Fallback: use the entire context if no paragraphs are found.
             merged_text = self.context
+            filtered_paragraphs = [self.context]
         else:
             bm25_indices = self._bm25_filter(paragraphs)
             semantic_indices = self._semantic_filter(paragraphs, bm25_indices)
+            filtered_paragraphs = [paragraphs[i] for i in sorted(semantic_indices)]
             merged_text = self._merge_paragraphs(paragraphs, semantic_indices)
+        
+        # Cache the filtered paragraphs for later inspection.
+        self._cache["filtered_paragraphs"] = filtered_paragraphs
         
         # Use the existing SentencePeriodPartitioner on the merged text.
         self._final_partitioner = SentencePeriodPartitioner(merged_text)
         self._final_partitioner.split_context()
-        # Cache the parts and separators.
+        # Cache the final parts and separators.
         self._cache["parts"] = self._final_partitioner.parts
         self._cache["separators"] = self._final_partitioner.separators
 
@@ -448,3 +451,11 @@ class HybridPartitioner(BaseContextPartitioner):
                 context += sep
             context += part
         return context
+
+    def get_filtered_paragraphs(self) -> List[str]:
+        """
+        Returns the paragraphs that passed the filtering process (after BM25 and semantic filtering).
+        """
+        if "filtered_paragraphs" not in self._cache:
+            self.split_context()
+        return self._cache["filtered_paragraphs"]
