@@ -119,7 +119,7 @@ def rerank(query, nodes,
         model_name,
         context=context,
         query=query,
-        device="cuda",
+        device="cuda:3",
         num_ablations=32 if len(nodes) < 128 else 64
     )
 

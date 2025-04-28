@@ -147,8 +147,8 @@ class SentencePeriodPartitioner(BaseContextPartitioner):
                 is_abbreviation = prev_char.isupper() and next_char == " "
 
                 if not is_decimal and not is_abbreviation:
-                    lookahead = text[i+1:i+3]
-                    if re.match(r"\s+[A-Z]", lookahead):
+                    lookahead = text[i+1:i+4]  # extended lookahead
+                    if re.match(r'(\s+[A-Z])|("\s+[A-Z])', lookahead):
                         sentences.append(buffer.strip())
                         buffer = ""
             i += 1

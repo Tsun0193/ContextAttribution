@@ -38,42 +38,39 @@ class ContextCiter:
         batch_size: int = 1,
         prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
         partitioner: Optional[BaseContextPartitioner] = None,
-        quantized: bool = False  # new optional flag
+        quantized: bool = False
     ) -> None:
-        """
-        Initializes a new instance of the ContextCiter class, which automates the process of:
-        1) splitting a context into multiple sources,
-        2) generating a response from an LLM using the query and context,
-        3) attributing which sources contributed the most to the response.
-        If quantized is True, the model is assumed to be loaded in 8-bit quantized mode.
-        """
         self.model = model
         self.tokenizer = tokenizer
-        self.context = context
-        self.query = query
         self.generate_kwargs = generate_kwargs or DEFAULT_GENERATE_KWARGS
         self.num_ablations = num_ablations
         self.ablation_keep_prob = ablation_keep_prob
         self.batch_size = batch_size
-        self.solver = solver
-        if self.solver is None:
+        self.prompt_template = prompt_template
+        self.query = query
+        self.quantized = quantized
+
+        # Solver setup
+        if solver is None:
             self.solver = LassoRegression()
         else:
             self.solver = SOLVERS[solver]()
-        self.prompt_template = prompt_template
-        self.quantized = quantized  # store quantized flag
+
+        # Important: initialize _context manually, not through setter yet
+        self._context = context
 
         # Initialize the partitioner
         if partitioner is None:
-            self.partitioner = SentencePeriodPartitioner(self.context)
+            self.partitioner = SentencePeriodPartitioner(self._context)
         else:
             self.partitioner = partitioner()
-            if self.partitioner.context != self.context:
+            if self.partitioner.context != self._context:
                 raise ValueError("Partitioner context does not match provided context.")
 
-        # Preprocess the context and split it into sources
-        self.partitioner.split_context()
+        # Now that self.partitioner exists, call the setter to trigger split if needed
+        self.context = context
 
+        # Other caches
         self._cache: Dict[str, Any] = {}
 
         if self.tokenizer.pad_token is None:
@@ -83,8 +80,8 @@ class ContextCiter:
     def from_pretrained(
         cls,
         pretrained_model_name_or_path: str,
-        context: str,
-        query: str,
+        context: str = None,
+        query: str = None,
         solver: str = "lasso",
         device: str = "cuda",
         model_kwargs: Dict[str, Any] = {},
@@ -100,7 +97,7 @@ class ContextCiter:
             # Load the model in 8-bit quantized mode (requires bitsandbytes)
             model = AutoModelForCausalLM.from_pretrained(
                 pretrained_model_name_or_path,
-                load_in_8bit=True,
+                load_in_4bit=True,
                 device_map="auto",
                 **model_kwargs
             )
@@ -249,7 +246,7 @@ class ContextCiter:
         masks_list = []
         logit_probs_list = []
         
-        for start in tqdm(range(0, total, self.batch_size)):
+        for start in range(0, total, self.batch_size):
             current_batch = min(self.batch_size, total - start)
             with torch.no_grad():
                 batch_masks, batch_logit_probs = get_masks_and_logit_probs(
@@ -391,3 +388,25 @@ class ContextCiter:
         if self._cache.get("pred_logit_probs") is None:
             self.get_pred_logit_probs()
         return self._cache["pred_logit_probs"]
+
+    def reset(self,
+              solver: Optional[BaseSolver] = None):
+        """
+        Reset the model and tokenizer to free up memory.
+        """
+        if solver is not None:
+            self.solver = solver
+        else:
+            self.solver = LassoRegression()
+        self._cache = {}
+
+    @property
+    def context(self):
+        return self._context
+
+    @context.setter
+    def context(self, value):
+        self._context = value
+        self.partitioner.context = value
+        if isinstance(value, str) and value.strip():
+            self.partitioner.split_context()
