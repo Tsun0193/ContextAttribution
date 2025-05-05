@@ -97,7 +97,7 @@ class ContextCiter:
             # Load the model in 8-bit quantized mode (requires bitsandbytes)
             model = AutoModelForCausalLM.from_pretrained(
                 pretrained_model_name_or_path,
-                load_in_4bit=True,
+                load_in_8bit=True,
                 device_map="auto",
                 **model_kwargs
             )
@@ -287,7 +287,7 @@ class ContextCiter:
         outputs = aggregate_logit_probs(self._logit_probs[:, ids_start_idx:ids_end_idx])
         self._cache["actual_logit_probs"] = outputs
         num_output_tokens = ids_end_idx - ids_start_idx
-        weight, bias = self.solver.fit(self._masks, outputs, self.num_sources)
+        weight, bias = self.solver.fit(self._masks, outputs, num_output_tokens)
         return weight, bias
 
     @property
