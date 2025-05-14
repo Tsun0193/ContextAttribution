@@ -17,12 +17,15 @@ import torch
 import os, warnings
 import gc
 import time
+import random
 
 # suppress warnings and HF bars
 warnings.filterwarnings('ignore')
 hf_logging.disable_progress_bar()
 embed_model = LocalEmbedding()
 load_dotenv()
+random.seed(42)
+torch.manual_seed(42)
 
 # === RAG CONFIG ===
 config = LanguageConfig(language="english", spacy_model="en_core_web_md")
@@ -52,17 +55,18 @@ def compute_logprob(model, tokenizer, prompt: str, continuation: str, device: st
     return float(lp.sum())
 
 # ---- load TydiQA dev ----
-file_path = "/data_hdd_16t/duydang/ContextAttribution/data/tydiqa-v1.0-dev.jsonl"
-english = []
+file_path = "data/hotpotqa_dev.jsonl"
+samples = []
 with open(file_path, "r", encoding="utf-8") as f:
     for line in tqdm(f, desc="Reading JSONL"):
-        s = json.loads(line)
-        if s.get("language","").lower()=="english":
-            english.append(s)
-print("English:", len(english))
+        sample = json.loads(line)
+        samples.append(sample)
+print(f"Collected {len(samples)} samples.")
 
 # take a middle slice by context length
-data = sorted(english, key=lambda x: len(x["document_plaintext"]))[128:256]
+random.shuffle(samples)
+data = sorted(samples, key=lambda x: len(x["context"]["sentences"]))[64:128]
+print(f"Using {len(data)} samples.")
 
 # ---- init ContextCiter once ----
 model_name    = "meta-llama/Llama-3.2-1B-Instruct"
@@ -71,7 +75,7 @@ cc = ContextCiter.from_pretrained(
     model_name,
     context="",        # overwritten per‐sample
     query="",
-    device="cuda:0",  
+    device="cuda:2",  
     solver="lasso",
     num_ablations=num_ablations
 )
@@ -110,7 +114,7 @@ class HybridRetriever(BaseRetriever):
         return retrieved_nodes
 
 # output CSV
-out_dir = "results/lds/tydiqa"
+out_dir = "../results/lds/hotpotqa"
 os.makedirs(out_dir, exist_ok=True)
 csv_path = f"{out_dir}/hybrid_{model_name.replace('/','-')}_{num_ablations}abls_{len(data)}samples.csv"
 write_header = not os.path.exists(csv_path)
@@ -120,8 +124,14 @@ start_time = time.time()
 for idx, sample in enumerate(tqdm(data, desc="Eval")):
     row = {"id": sample.get("example_id","")}
     try:
-        q = sample["question_text"]
-        full_ctx = sample["document_plaintext"]
+        q = sample["question"]
+        titles = sample["context"]["title"]
+        docs = sample["context"]["sentences"]
+        full_ctx_parts = []
+        for title, sentences in zip(titles, docs):
+            content = " ".join(sentences).strip()
+            full_ctx_parts.append(f"Title: {title}\nContent: {content}")
+        full_ctx = "\n\n".join(full_ctx_parts)
 
         doc = Document(text=full_ctx)
         storage = StorageContext.from_defaults()
@@ -144,38 +154,6 @@ for idx, sample in enumerate(tqdm(data, desc="Eval")):
         cc.reset()
         cc.context = rctx
         cc.query   = q
-
-        # prompt_full = cc.prompt_template.format(context=rctx, query=q)
-        # enc_full = cc.tokenizer(prompt_full, return_tensors="pt", padding=True, truncation=True).to(cc.model.device)
-        # out_ids  = cc.model.generate(**enc_full, pad_token_id=cc.tokenizer.eos_token_id)[0]
-        # n_prompt = enc_full.input_ids.shape[1]
-        # resp_ids = out_ids[n_prompt:]
-        # continuation = cc.tokenizer.decode(resp_ids, skip_special_tokens=True)
-        # lp_full = compute_logprob(cc.model, cc.tokenizer, prompt_full, continuation, cc.model.device)
-
-        # for k in (1,3,5):
-        #     at_df = cc.get_attributions(as_dataframe=True, verbose=False).data
-        #     topk  = at_df.nlargest(k, 'Score')['Source'].tolist()
-
-        #     ablated = rctx
-        #     for src in topk:
-        #         ablated = ablated.replace(src, "")
-        #     prompt_abl = cc.prompt_template.format(context=ablated, query=q)
-        #     lp_abl     = compute_logprob(cc.model, cc.tokenizer, prompt_abl, continuation, cc.model.device)
-        #     row[f"k={k}"] = abs(lp_full - lp_abl)
-
-        # del vs_idx
-        # del hybrid_ret, sparse_ret, dense_ret
-        # del qe, rctx, rnodes
-        # del doc, nodes
-        # del storage
-        # gc.collect()
-        # torch.cuda.empty_cache()
-
-        # # append to CSV
-        # df = pd.DataFrame([row])
-        # df.to_csv(csv_path, mode="a", header=write_header, index=False)
-        # write_header = False
 
         attrs = cc.get_attributions(as_dataframe=False, verbose=False)
         pred_logits = cc._pred_logit_probs
@@ -207,6 +185,5 @@ for idx, sample in enumerate(tqdm(data, desc="Eval")):
         df = pd.DataFrame([row])
         df.to_csv(csv_path, mode="a", header=write_header, index=False)
         write_header = False
-        continue
 
 print("Total time:", time.time() - start_time)
